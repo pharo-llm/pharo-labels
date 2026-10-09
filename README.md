@@ -36,6 +36,14 @@ works and runs step 1.
 
 Individual stages: `.venv/bin/pharo-miner --help`.
 
+Step 3 also generates **`results/figures/taxonomy.png`**, showing the category
+hierarchy with repository prevalence bars. After running `./3-results.sh`,
+open the figure on macOS with:
+
+```bash
+open results/figures/taxonomy.png
+```
+
 ### Snapshots on Hugging Face (no need to mine twice)
 
 All results are saved to the Hugging Face dataset set in `config.yaml`

@@ -34,6 +34,10 @@ else
   echo "Benchmark coverage skipped (set BENCHMARKS at the top of 3-results.sh)."
 fi
 run_logged "$LOG" "$MINER" report || { echo "Stopped: see the message above (log: $LOG)"; exit 1; }
+echo
+echo "Taxonomy figure: results/figures/taxonomy.png"
+echo "  Shows the category hierarchy with repository prevalence bars."
+echo "  Open on macOS: open results/figures/taxonomy.png"
 if [ "$PUSH_SNAPSHOT" = "yes" ]; then
   ask_secret HF_TOKEN "Hugging Face token with write access (https://huggingface.co/settings/tokens)"
   run_logged "$LOG" "$MINER" snapshot push --message "Results: taxonomy, statistics, reports" \

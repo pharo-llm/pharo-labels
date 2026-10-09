@@ -31,7 +31,7 @@ CONSENSUS="majority"
 EVIDENCE_POLICY="enforce"
 
 # 0 = label all 300 methods. Use e.g. 10 for a quick, cheap trial of a model first.
-LIMIT=0
+LIMIT=5
 
 # Parallel requests per model. Empty = automatic (1 for local models, 4 for APIs).
 CONCURRENCY=""
