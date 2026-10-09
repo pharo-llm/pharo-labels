@@ -1,0 +1,125 @@
+# Initial application-domain categories (RQ1). Candidate categories, not a
+# final taxonomy: repositories matching none are reported with their most
+# distinctive README/description terms so new categories can emerge.
+#
+# Evidence sources and weights (scores are UNCALIBRATED sums of weights):
+#   keywords   regexes searched in description (w=1.5), README (w=1.0)
+#   topics     GitHub topics (w=2.0)
+#   dependencies  BaselineOf external projects (w=2.0)
+#   frameworks    share of referenced framework classes (w=2.0 if share >= threshold)
+#   package_patterns  package names (w=1.0)
+# Repository NAMES are only used when no description, README or topics exist.
+version: "0.1"
+domains:
+  web_development:
+    name: Web applications and frameworks
+    keywords: ['\bweb (application|app|framework|server|site)s?\b', '\bhttp\b', '\brest(ful)? api\b', '\bseaside\b', '\bteapot\b', '\bhtml\b', '\bwebsocket']
+    topics: [web, seaside, http, rest, webapp, web-framework, html]
+    dependencies: [Seaside3, Teapot, ZincHTTPComponents, Zinc, Mustache, Tealight, Iliad]
+    frameworks: [Seaside, Teapot, Zinc]
+    package_patterns: ['^Seaside', '-Web', 'REST', '^Zinc-HTTP']
+  developer_tools:
+    name: Developer tools and IDE extensions
+    keywords: ['\bide\b', '\bdebugger\b', '\brefactoring', '\bcode (browser|completion|critic|analysis|coverage)', '\bdevelopment tools?\b', '\binspector\b', '\blinter\b', '\bversion control\b', '\bgit (client|integration)', '\bprofiler\b']
+    topics: [ide, debugger, refactoring, tools, developer-tools, code-analysis, git, profiling]
+    dependencies: [Calypso, NewTools, Iceberg, Spec2]
+    frameworks: [Calypso, Refactoring, Iceberg]
+    package_patterns: ['^NewTools', '^Calypso', 'Debugger', 'Refactoring', 'Inspector', '^Iceberg']
+  data_persistence:
+    name: Databases and persistence
+    keywords: ['\bdatabase', '\bsql\b', '\bpostgres', '\bmysql\b', '\bsqlite', '\bmongo', '\bpersisten', '\borm\b', '\bobject[- ]relational', '\bnosql\b', '\bkey[- ]value store']
+    topics: [database, sql, postgresql, mongodb, sqlite, orm, persistence, nosql]
+    dependencies: [Voyage, Glorp, P3, SQLite3, MongoTalk, ReStore, Garage, PunQLite, Soil]
+    frameworks: [Voyage, Glorp, P3, SQLite3, Mongo]
+    package_patterns: ['Glorp', 'Voyage', 'SQL', 'Mongo', 'Persistence']
+  data_processing_formats:
+    name: Data processing, parsing and file formats
+    keywords: ['\bjson\b', '\bcsv\b', '\bxml\b', '\byaml\b', '\bserializ', '\bparser\b', '\bparsing\b', '\bdata (processing|frame|wrangling)', '\bston\b', '\bmarkdown\b']
+    topics: [json, csv, xml, parser, serialization, dataframe, markdown, yaml]
+    dependencies: [NeoJSON, NeoCSV, STON, XMLParser, PetitParser, PetitParser2, SmaCC, DataFrame, Microdown]
+    frameworks: [NeoJSON, NeoCSV, STON, XML, PetitParser, SmaCC, Fuel]
+    package_patterns: ['JSON', 'CSV', 'XML', 'Parser', 'DataFrame', 'STON']
+  visualization_graphics:
+    name: Visualization and graphics
+    keywords: ['\bvisuali[sz]ation', '\bcharts?\b', '\bplot', '\bgraphics?\b', '\broassal', '\bbloc\b', '\b2d\b', '\bsvg\b', '\bdiagram', '\brendering\b', '\bcanvas\b']
+    topics: [visualization, roassal, graphics, charts, bloc, svg, data-visualization]
+    dependencies: [Roassal3, Roassal, Bloc, Athens, Sparta]
+    frameworks: [Roassal, Bloc, Athens]
+    package_patterns: ['Roassal', '^Bloc', 'Visuali', 'Chart', 'Athens']
+  user_interfaces:
+    name: User-interface frameworks and desktop applications
+    keywords: ['\buser interface', '\bui framework', '\bwidgets?\b', '\bspec2?\b', '\bmorphic\b', '\bgui\b', '\bgtk\b', '\bdesktop app']
+    topics: [ui, gui, spec, morphic, widgets, gtk]
+    dependencies: [Spec2, Brick, Toplo, Morphic]
+    frameworks: [Spec, Morphic, Brick, Toplo]
+    package_patterns: ['^Spec', 'Morphic', '-UI$', '^Brick', '^Toplo']
+  scientific_numerical:
+    name: Scientific, numerical and AI/ML computing
+    keywords: ['\bscientific', '\bnumerical', '\bstatistic', '\bmachine learning\b', '\bneural', '\bmathemati', '\bsimulation', '\blinear algebra', '\bclustering\b', '\bregression\b', '\bepidemiolog', '\bbioinformatic', '\bmodel(l)?ing\b']
+    topics: [machine-learning, ai, statistics, mathematics, numerical, simulation, scientific-computing, data-science]
+    dependencies: [PolyMath, DataFrame, AIGraphAlgorithms, Kendrick, PharoAI]
+    frameworks: [PolyMath, PharoAI]
+    package_patterns: ['^PM', '^AI-', 'Math', 'Statistic', 'Kendrick']
+  testing_quality:
+    name: Testing and quality assurance tools
+    keywords: ['\btest(ing)? (framework|tool|library)', '\bmutation testing', '\bcode coverage', '\bmocks?\b', '\bfuzz', '\bproperty[- ]based', '\bquality (assurance|analysis)', '\bbenchmark(ing)? (framework|tool)']
+    topics: [testing, mutation-testing, coverage, mocking, sunit, quality]
+    dependencies: [Mocketry, MuTalk, StateSpecs, BabyMock, Phexample, SMark]
+    frameworks: [Mocketry, MuTalk]
+    package_patterns: ['Mock', 'MuTalk', 'Coverage', 'SUnit']
+  networking_distributed:
+    name: Networking and distributed systems
+    keywords: ['\bnetwork', '\bsocket', '\bdistributed', '\bremote (object|debugg|communication)', '\bmessage (queue|broker)', '\bmqtt\b', '\bamqp\b', '\brpc\b', '\bpeer[- ]to[- ]peer', '\bactors?\b', '\bstomp\b', '\bredis\b']
+    topics: [networking, distributed-systems, mqtt, rpc, sockets, actors, iot]
+    dependencies: [Seamless, TelePharo, Basys, MQTT, Stomp, ZeroMQ, Redis]
+    frameworks: [Zinc, Seamless]
+    package_patterns: ['Network', 'Socket', 'Remote', 'MQTT', 'Seamless']
+  language_implementation:
+    name: Language implementation, compilers and VMs
+    keywords: ['\bcompiler', '\bvirtual machine\b', '\bvm\b', '\binterpreter', '\bbytecode', '\blanguage implementation', '\bjit\b', '\bgarbage collect', '\bparser generator', '\btranspil', '\bmeta-?model']
+    topics: [compiler, vm, interpreter, language, bytecode, jit, programming-language]
+    dependencies: [SmaCC, OpalCompiler, VMMaker]
+    frameworks: [Opal, SmaCC]
+    package_patterns: ['Compiler', '^VMMaker', 'Interpreter', '^Opal', 'Bytecode', '^Slang']
+  software_modeling_analysis:
+    name: Software modeling and analysis (Moose/FAMIX)
+    keywords: ['\bmoose\b', '\bfamix\b', '\bsoftware analysis', '\breverse engineering', '\bmetamodel', '\bmodel[- ]driven']
+    topics: [moose, famix, software-analysis, reverse-engineering, mde]
+    dependencies: [Moose, Famix, FamixTagging, Carrefour]
+    frameworks: [Moose, Famix]
+    package_patterns: ['^Famix', '^Moose']
+  education:
+    name: Educational software and learning material
+    keywords: ['\btutorial', '\bcourse\b', '\bmooc\b', '\bexercises?\b', '\bkata\b', '\bstudents?\b', '\bteaching', '\blearn(ing)? (pharo|smalltalk|to program)', '\bbook\b', '\blecture', '\badvent of code\b', '\bexamples? for\b']
+    topics: [education, tutorial, mooc, exercises, kata, teaching, book, advent-of-code, learning]
+    dependencies: []
+    frameworks: []
+    package_patterns: ['Tutorial', 'Exercise', 'Kata', 'MOOC', 'Example', 'AoC', 'Course']
+  business_applications:
+    name: Business applications
+    keywords: ['\berp\b', '\bbusiness', '\baccounting', '\binvoic', '\bcrm\b', '\bfinanc', '\bbanking', '\binventory', '\be-?commerce', '\bpayroll', '\bhealthcare']
+    topics: [erp, business, accounting, finance, crm, ecommerce]
+    dependencies: []
+    frameworks: []
+    package_patterns: ['Invoice', 'Account', 'Business', 'ERP']
+  games_multimedia:
+    name: Games, music and multimedia
+    keywords: ['\bgames?\b', '\bmusic', '\baudio', '\bsound', '\bvideo\b', '\bmidi\b', '\bsprite', '\bchess\b', '\bpuzzle']
+    topics: [game, games, music, audio, midi, game-development]
+    dependencies: []
+    frameworks: []
+    package_patterns: ['Game', 'Music', 'Sound', 'Audio']
+  system_infrastructure:
+    name: System infrastructure, packaging and platform libraries
+    keywords: ['\bpackage manag', '\bdependency manag', '\bfile ?system\b', '\bffi\b', '\bforeign function', '\boperating system', '\bsubprocess', '\blogging\b', '\bconcurren', '\bcollections? library', '\bcontainers?\b', '\bkernel\b', '\bpharo (image|launcher)', '\bbootstrap']
+    topics: [ffi, logging, concurrency, collections, containers, package-manager, launcher, os]
+    dependencies: [TaskIt, OSSubprocess, Beacon, Containers, ThreadedFFI, UnifiedFFI]
+    frameworks: [UFFI, TaskIt, OSSubprocess, Announcements]
+    package_patterns: ['^Containers', 'FFI', 'OSSubprocess', 'TaskIt', '^Kernel', '^System-', 'Collections']
+  documentation_publishing:
+    name: Documentation and publishing
+    keywords: ['\bdocumentation (system|tool|generator)', '\bpillar\b', '\bmicrodown\b', '\bpublishing', '\bstatic site', '\blatex\b', '\bslides?\b']
+    topics: [documentation, pillar, microdown, markdown, publishing, latex]
+    dependencies: [Pillar, Microdown, Ecstatic]
+    frameworks: [Microdown, Pillar]
+    package_patterns: ['^Pillar', '^Microdown', 'Document']

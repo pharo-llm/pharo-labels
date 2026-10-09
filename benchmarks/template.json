@@ -1,0 +1,16 @@
+{
+  "tasks": [
+    {
+      "benchmark": "",
+      "task_id": "",
+      "description": "",
+      "operations": [],
+      "structure": [],
+      "required_capabilities": [],
+      "transfer_status": "not_evaluated",
+      "difficulty": "",
+      "preserves_capability": null,
+      "origin": ""
+    }
+  ]
+}

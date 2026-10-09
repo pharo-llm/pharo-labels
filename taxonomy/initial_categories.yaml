@@ -1,0 +1,892 @@
+# PharoTaskMiner — initial (seed) programming-operation taxonomy, version 0.1
+#
+# This file is a STARTING POINT for open coding, not a validated result.
+# Categories are hierarchical: level 1 = broad capability, level 2 = programming
+# operation, level 3 = specific operation. Rules attach candidate evidence to
+# methods; they never prove that a method "is" a task. Bottom-up discovery
+# (`pharo-miner discover-operations`) reports vocabulary and method groups that
+# no rule covers, so the taxonomy can be revised from the data.
+#
+# Rule clause keys (all keys in a clause must match = AND; clauses = OR):
+#   selectors / selector_patterns     message sends observed in the method body
+#   globals / global_patterns         referenced global names (classes, globals)
+#   defines_selectors / defines_selector_patterns   the method's own selector
+#   features                          structural feature flags (all must hold)
+#   side: class|instance, is_test: true|false
+#   strength: strong | weak           (weak-only evidence => label_status "ambiguous")
+#
+# concept_type: general | pharo_specific | framework_specific   (RQ3)
+
+version: "0.1"
+special_statuses:
+  unknown: "No rule matched a non-trivial method."
+  ambiguous: "Only weak (polysemous) evidence matched, e.g. add: on an unknown receiver."
+  multiple_operations: "Evidence for several distinct level-2 operations; labels are kept."
+  insufficient_context: "Method too small or empty to characterise (e.g. constant return)."
+
+categories:
+  # ------------------------------------------------------------------ L1
+  - {id: data_manipulation, level: 1, name: Data manipulation, concept_type: general,
+     definition: "Creating, transforming, querying and converting data values and data structures."}
+  - {id: control_flow, level: 1, name: Control flow, concept_type: general,
+     definition: "Deciding which code runs: conditionals, loops, nil handling, exceptions, recursion."}
+  - {id: io_and_integration, level: 1, name: I/O and integration, concept_type: general,
+     definition: "Interaction with streams, files, networks, databases, processes and foreign code."}
+  - {id: object_oriented_design, level: 1, name: Object-oriented design, concept_type: general,
+     definition: "Object construction, state, inheritance, polymorphism and standard object protocols."}
+  - {id: blocks_and_closures, level: 1, name: Blocks and closures, concept_type: pharo_specific,
+     definition: "Use of block closures as first-class values beyond standard control structures."}
+  - {id: reflection_metaprogramming, level: 1, name: Reflection and metaprogramming, concept_type: pharo_specific,
+     definition: "Inspecting or modifying the program itself at run time."}
+  - {id: concurrency_and_events, level: 1, name: Concurrency and events, concept_type: general,
+     definition: "Processes, synchronisation, announcements and event subscriptions."}
+  - {id: user_interface_graphics, level: 1, name: User interface and graphics, concept_type: framework_specific,
+     definition: "Building UIs and rendering graphics or visualisations."}
+  - {id: testing_and_diagnostics, level: 1, name: Testing and diagnostics, concept_type: general,
+     definition: "Assertions, unit tests, logging and debugging support."}
+
+  # ------------------------------------------------------------------ L2
+  - {id: collection_processing, parent: data_manipulation, level: 2, name: Collection processing, concept_type: general,
+     definition: "Operations over collections (iteration, filtering, mapping, aggregation, search, sorting)."}
+  - {id: string_processing, parent: data_manipulation, level: 2, name: String processing, concept_type: general,
+     definition: "Building, searching, splitting and normalising strings and symbols."}
+  - {id: parsing_validation, parent: data_manipulation, level: 2, name: Parsing and validation, concept_type: general,
+     definition: "Turning text into structured data and checking input validity."}
+  - {id: serialization, parent: data_manipulation, level: 2, name: Serialization, concept_type: general,
+     definition: "Encoding and decoding objects to/from external formats (JSON, STON, XML, CSV, Fuel)."}
+  - {id: numeric_computation, parent: data_manipulation, level: 2, name: Numeric computation, concept_type: general,
+     definition: "Arithmetic, mathematical functions, random numbers, statistics and numeric conversion."}
+  - {id: date_time, parent: data_manipulation, level: 2, name: Date and time, concept_type: general,
+     definition: "Working with dates, times, durations and timestamps."}
+  - {id: conditional_logic, parent: control_flow, level: 2, name: Conditional logic, concept_type: general,
+     definition: "Branching via boolean and emptiness messages."}
+  - {id: iteration_loops, parent: control_flow, level: 2, name: Loops, concept_type: general,
+     definition: "Index- or condition-controlled loops (whileTrue:, to:do:, timesRepeat:)."}
+  - {id: exception_handling, parent: control_flow, level: 2, name: Error and exception handling, concept_type: general,
+     definition: "Signalling, handling, resuming and cleaning up after exceptions."}
+  - {id: recursion_traversal, parent: control_flow, level: 2, name: Recursion and structural traversal, concept_type: general,
+     definition: "Recursive algorithms and traversal of trees and graphs."}
+  - {id: stream_io, parent: io_and_integration, level: 2, name: Streams, concept_type: general,
+     definition: "Reading from and writing to ReadStream/WriteStream style streams."}
+  - {id: file_system, parent: io_and_integration, level: 2, name: File system, concept_type: general,
+     definition: "Files and directories via FileSystem/FileReference."}
+  - {id: network_communication, parent: io_and_integration, level: 2, name: Network communication, concept_type: general,
+     definition: "HTTP clients/servers, sockets, URLs."}
+  - {id: persistence, parent: io_and_integration, level: 2, name: Database and persistence, concept_type: framework_specific,
+     definition: "Relational/NoSQL databases, ORMs and object stores."}
+  - {id: external_processes_ffi, parent: io_and_integration, level: 2, name: OS processes and FFI, concept_type: pharo_specific,
+     definition: "Calling operating-system processes and foreign libraries (UFFI)."}
+  - {id: object_lifecycle, parent: object_oriented_design, level: 2, name: Object construction and state, concept_type: general,
+     definition: "Instantiation, initialisation, accessors and state modification."}
+  - {id: inheritance_polymorphism, parent: object_oriented_design, level: 2, name: Inheritance and polymorphism, concept_type: general,
+     definition: "Super sends, abstract methods, double dispatch and visitors."}
+  - {id: object_protocols, parent: object_oriented_design, level: 2, name: Standard object protocols, concept_type: general,
+     definition: "Equality, hashing, comparison, copying and printing."}
+  - {id: class_side_behavior, parent: object_oriented_design, level: 2, name: Class-side behaviour, concept_type: pharo_specific,
+     definition: "Methods defined on the metaclass (instance creation, defaults, singletons, settings)."}
+  - {id: higher_order_blocks, parent: blocks_and_closures, level: 2, name: Higher-order blocks, concept_type: pharo_specific,
+     definition: "Storing, passing and evaluating blocks; non-local returns."}
+  - {id: introspection, parent: reflection_metaprogramming, level: 2, name: Introspection, concept_type: pharo_specific,
+     definition: "Querying classes, methods, instance variables and execution contexts."}
+  - {id: dynamic_invocation, parent: reflection_metaprogramming, level: 2, name: Dynamic message sending, concept_type: pharo_specific,
+     definition: "Computing the selector to send at run time (perform: family)."}
+  - {id: code_generation, parent: reflection_metaprogramming, level: 2, name: Code generation and program manipulation, concept_type: pharo_specific,
+     definition: "Compiling, creating classes, editing methods and manipulating ASTs."}
+  - {id: pragmas_and_traits, parent: reflection_metaprogramming, level: 2, name: Pragmas and traits, concept_type: pharo_specific,
+     definition: "Method annotations and trait composition."}
+  - {id: concurrency, parent: concurrency_and_events, level: 2, name: Concurrency, concept_type: general,
+     definition: "Processes, semaphores, mutexes, delays and futures."}
+  - {id: event_handling, parent: concurrency_and_events, level: 2, name: Event handling, concept_type: general,
+     definition: "Announcements, observers and UI/event callbacks."}
+  - {id: ui_construction, parent: user_interface_graphics, level: 2, name: UI construction, concept_type: framework_specific,
+     definition: "Building and wiring user interfaces (Spec, Morphic, Bloc/Brick, Seaside rendering)."}
+  - {id: graphics_visualization, parent: user_interface_graphics, level: 2, name: Graphics and visualisation, concept_type: framework_specific,
+     definition: "Shapes, colours, geometry, canvases and data visualisation."}
+  - {id: unit_testing, parent: testing_and_diagnostics, level: 2, name: Unit testing, concept_type: general,
+     definition: "SUnit test methods, assertions and fixtures."}
+  - {id: logging_debugging, parent: testing_and_diagnostics, level: 2, name: Logging and debugging, concept_type: general,
+     definition: "Transcript output, logging, inspection and halts."}
+
+  # ------------------------------------------------------------------ L3: collections
+  - id: collection_iteration
+    parent: collection_processing
+    level: 3
+    name: Collection iteration
+    concept_type: general
+    definition: "Visiting each element of a collection for side effects."
+    include: ["do:, doWithIndex:, keysAndValuesDo:, reverseDo:, do:separatedBy:"]
+    exclude: ["Producing a new collection (mapping/filtering)", "Index loops with to:do: (see loops)"]
+    rules:
+      - selectors: [do:, doWithIndex:, withIndexDo:, keysAndValuesDo:, reverseDo:, do:separatedBy:, keysDo:, valuesDo:,
+                    associationsDo:, allOccurrencesOf:, pairsDo:, with:do:, doWithIndex:, withIndexCollect:, do:without:,
+                    readStreamDo:, linesDo:]
+        strength: strong
+  - id: collection_filtering
+    parent: collection_processing
+    level: 3
+    name: Collection filtering
+    concept_type: general
+    definition: "Selecting elements from a collection according to a condition."
+    include: ["Predicate-based element selection (select:, reject:)"]
+    exclude: ["Searching for one matching element", "Transforming every element"]
+    rules:
+      - selectors: [select:, reject:, select:thenCollect:, reject:thenCollect:, select:thenDo:, reject:thenDo:,
+                    collect:thenSelect:, copyWithout:, selectWithIndex:, associationsSelect:, keysSelect:, valuesSelect:,
+                    select:ifNone:]
+        strength: strong
+  - id: collection_transformation
+    parent: collection_processing
+    level: 3
+    name: Collection transformation (mapping)
+    concept_type: general
+    definition: "Producing a new collection by transforming every element."
+    include: ["collect:, flatCollect:, with:collect:, collect:as:"]
+    exclude: ["Plain conversion between collection classes without per-element transformation"]
+    rules:
+      - selectors: [collect:, flatCollect:, with:collect:, collectWithIndex:, withIndexCollect:, collect:as:,
+                    collect:into:, gather:, flatCollectAsSet:, collect:thenSelect:, select:thenCollect:,
+                    keysAndValuesCollect:, associations]
+        strength: strong
+  - id: collection_aggregation
+    parent: collection_processing
+    level: 3
+    name: Collection aggregation
+    concept_type: general
+    definition: "Reducing a collection to a single value (sum, count, max, fold)."
+    include: ["inject:into:, sum:, detectMax:, count:, fold:, max, average"]
+    exclude: ["Boolean membership tests (searching)"]
+    rules:
+      - selectors: [inject:into:, sum:, sum, sumNumbers, sumNumbers:, detectMax:, detectMin:, count:, fold:, reduce:,
+                    max, min, average, average:, max:, inject:into:, allSatisfy:, anySatisfy:, noneSatisfy:,
+                    allOccurrencesOf:, occurrencesOf:, sum:ifEmpty:, detectSum:]
+        strength: strong
+  - id: collection_searching
+    parent: collection_processing
+    level: 3
+    name: Collection searching
+    concept_type: general
+    definition: "Finding an element, index or membership in a collection."
+    include: ["detect:, detect:ifNone:, includes:, indexOf:, anySatisfy:"]
+    exclude: ["Selecting all matching elements (filtering)", "Substring search in strings"]
+    rules:
+      - selectors: [detect:, detect:ifNone:, detect:ifFound:, detect:ifFound:ifNone:, anySatisfy:, contains:,
+                    findFirst:, findLast:, identityIncludes:, keyAtValue:, keyAtValue:ifAbsent:, indexOf:ifAbsent:,
+                    identityIndexOf:, includesAny:, includesAll:]
+        strength: strong
+      - selectors: [includes:, indexOf:, includesKey:]
+        strength: weak
+  - id: collection_sorting
+    parent: collection_processing
+    level: 3
+    name: Sorting and ordering
+    concept_type: general
+    definition: "Ordering collection elements."
+    rules:
+      - selectors: [sort, sort:, sorted, sorted:, asSortedCollection, asSortedCollection:, sortBlock:, sortBlock,
+                    reverse, reversed, sortByKey, sorted:ascending, ascending, descending, sortedBy:]
+        strength: strong
+      - globals: [SortedCollection]
+        strength: strong
+  - id: collection_construction_modification
+    parent: collection_processing
+    level: 3
+    name: Collection construction and modification
+    concept_type: general
+    definition: "Creating collections and adding/removing elements."
+    rules:
+      - globals: [OrderedCollection, Array, Set, Bag, IdentitySet, LinkedList, Stack, OrderedDictionary,
+                  CTOrderedSet, Interval, Array2D, ByteArray, WordArray]
+        strength: strong
+      - selectors: [addAll:, removeAll:, removeFirst, removeLast, addFirst:, addLast:, removeAllSuchThat:,
+                    copyWith:, copyFrom:to:, withAll:, new:withAll:, addAllFirst:, removeFirst:, removeLast:,
+                    copyReplaceAll:with:, asOrderedCollection, asArray, first:, last:, allButFirst, allButLast]
+        strength: strong
+      - selectors: [add:, remove:, remove:ifAbsent:, first, last, isEmpty, notEmpty, size]
+        strength: weak
+  - id: dictionary_access
+    parent: collection_processing
+    level: 3
+    name: Dictionary (key-value) access
+    concept_type: general
+    definition: "Lookup and update in keyed collections."
+    rules:
+      - selectors: [at:ifAbsent:, at:ifAbsentPut:, at:ifPresent:, at:ifPresent:ifAbsent:, removeKey:, removeKey:ifAbsent:,
+                    keys, values, associations, keysAndValuesDo:, includesKey:, keysSortedSafely, at:ifPresent:ifAbsentPut:]
+        strength: strong
+      - globals: [Dictionary, IdentityDictionary, SmallDictionary, OrderedDictionary, WeakKeyDictionary, LRUCache]
+        strength: strong
+      - selectors: [at:, at:put:]
+        strength: weak
+  - id: set_operations
+    parent: collection_processing
+    level: 3
+    name: Set operations
+    concept_type: general
+    definition: "Union, intersection, difference and uniqueness."
+    rules:
+      - selectors: [union:, intersection:, difference:, asSet, asIdentitySet, withoutDuplicates, asBag, "|", "&"]
+        globals: []
+        strength: strong
+  - id: grouping_partitioning
+    parent: collection_processing
+    level: 3
+    name: Grouping and partitioning
+    concept_type: general
+    definition: "Splitting a collection into groups or chunks."
+    rules:
+      - selectors: [groupedBy:, groupBy:, groupedBy:having:, groupsOf:atATimeDo:, pairsCollect:, splitOn:,
+                    partition:, groupByRuns:, piecesCutWhere:, asBag]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: strings
+  - id: string_construction
+    parent: string_processing
+    level: 3
+    name: String construction and formatting
+    concept_type: general
+    definition: "Building strings by concatenation, formatting, joining or stream construction."
+    rules:
+      - selectors: [",", "streamContents:", "join:", "format:", "printString", "displayString", "asString",
+                    "printPaddedWith:to:", "padLeftTo:", "padRightTo:", "printString:", "printStringBase:",
+                    "expandMacros", "expandMacrosWith:", "<<", "printOn:delimiter:", "joinUsing:", "fullPrintString"]
+        strength: weak
+      - selectors: ["streamContents:", "join:", "format:", "padLeftTo:", "padRightTo:", "printPaddedWith:to:", "joinUsing:"]
+        strength: strong
+  - id: string_searching_matching
+    parent: string_processing
+    level: 3
+    name: String search, matching and splitting
+    concept_type: general
+    definition: "Substring search, prefix/suffix tests, regular expressions, splitting and trimming."
+    rules:
+      - selectors: [includesSubstring:, includesSubstring:caseSensitive:, beginsWith:, endsWith:, matchesRegex:,
+                    asRegex, matches:, match:, copyReplaceAll:with:, substrings, substrings:, subStrings:, lines,
+                    trimBoth, trimmed, trimLeft, trimRight, findString:, findTokens:, indexOfSubCollection:,
+                    copyUpTo:, copyAfter:, copyUpToLast:, copyAfterLast:, allRegexMatches:, copyReplacing:with:,
+                    replaceAll:with:, splitOn:, occurrencesOfString:, startsWith:, includesSubstring:]
+        strength: strong
+  - id: string_conversion_normalization
+    parent: string_processing
+    level: 3
+    name: String conversion and normalisation
+    concept_type: general
+    definition: "Case changes, symbol/number conversion and character-level transformation."
+    rules:
+      - selectors: [asLowercase, asUppercase, asSymbol, asNumber, asInteger, capitalized, uncapitalized, asCamelCase,
+                    asUppercase, asLowercase, asByteArray, utf8Encoded, utf8Decoded, asCharacter, isVowel, isLetter,
+                    isDigit, isSeparator, asUnicode, asLowercase, withBlanksTrimmed, asCommaString, asStringOn:]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: parsing / validation / serialization
+  - id: text_parsing
+    parent: parsing_validation
+    level: 3
+    name: Text parsing
+    concept_type: general
+    definition: "Turning character input into structured values (hand-written readers or parser frameworks)."
+    rules:
+      - global_patterns: ["^PP[A-Z]", "^PP2", "^SmaCC", "^Mic[A-Z].*Parser", "Parser$", "Scanner$", "Tokenizer$"]
+        strength: strong
+      - selectors: [readFrom:, readFromString:, parse:, parse, upTo:, skipSeparators, peekFor:, skipTo:, nextLine,
+                    readStream, parseExpression:, parseMethod:, asNumber, readFrom:ifFail:, parse:onError:]
+        strength: weak
+      - selectors: [peekFor:, skipSeparators, readFrom:ifFail:, parse:onError:, skipTo:]
+        strength: strong
+  - id: input_validation
+    parent: parsing_validation
+    level: 3
+    name: Input validation
+    concept_type: general
+    definition: "Checking arguments or data and rejecting invalid input."
+    include: ["Type/range checks that signal errors or return early"]
+    rules:
+      - features: [has_conditional, has_exception_signal]
+        strength: strong
+      - selectors: [isString, isNumber, isInteger, isSymbol, isCollection, isEmptyOrNil, between:and:, isKindOf:, assert:, assert:description:]
+        is_test: false
+        strength: weak
+  - id: json_serialization
+    parent: serialization
+    level: 3
+    name: JSON serialization
+    concept_type: framework_specific
+    definition: "Reading or writing JSON."
+    rules:
+      - global_patterns: ["^NeoJSON", "^STONJSON$", "^ZnEntity$"]
+        strength: strong
+      - selectors: [toJsonString:, fromJSON:, asJson, toJson, toJsonString, fromString:, neoJsonMapping:, jsonWriter, asJSON]
+        strength: weak
+      - selectors: [toJsonString:, neoJsonMapping:, fromJSON:, asJson, asJSON]
+        strength: strong
+  - id: object_serialization
+    parent: serialization
+    level: 3
+    name: Object serialization (STON/Fuel)
+    concept_type: pharo_specific
+    definition: "Serialising object graphs with STON or Fuel."
+    rules:
+      - global_patterns: ["^STON$", "^STONWriter$", "^STONReader$", "^FL(Serializer|Materializer)", "^FLSerializer"]
+        strength: strong
+      - selectors: [stonOn:, fromStonWith:, stonName, serialize:toFileNamed:, materializeFromFileNamed:, toString:, fromString:]
+        strength: weak
+      - defines_selectors: [stonOn:, fromSton:, stonProcessSubObjects:, stonName, stonContainSubObjects]
+        strength: strong
+  - id: markup_csv_formats
+    parent: serialization
+    level: 3
+    name: XML, CSV and other formats
+    concept_type: framework_specific
+    definition: "Reading/writing XML, CSV, YAML, Markdown and similar formats."
+    rules:
+      - global_patterns: ["^XML[A-Z]", "^NeoCSV", "^Mic[A-Z]", "^Pr[A-Z][a-z]+(Document|Parser)", "^Yaml", "^Pillar"]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: numeric / time
+  - id: arithmetic_math
+    parent: numeric_computation
+    level: 3
+    name: Arithmetic and mathematical functions
+    concept_type: general
+    definition: "Arithmetic and mathematical function evaluation."
+    rules:
+      - selectors: ["*", "/", "//", "\\\\", "rem:", "quo:", sqrt, squared, "raisedTo:", ln, log, "log:", exp, sin, cos, tan,
+                    arcTan, floor, ceiling, rounded, truncated, "roundTo:", abs, negated, reciprocal, factorial, gcd:, lcm:,
+                    isPrime, "**", "raisedToInteger:", sign, "truncateTo:", isZero, even, odd]
+        strength: strong
+      - selectors: ["+", "-", "max:", "min:", "between:and:"]
+        strength: weak
+  - id: random_numbers
+    parent: numeric_computation
+    level: 3
+    name: Random numbers
+    concept_type: general
+    definition: "Generating random values and shuffling."
+    rules:
+      - globals: [Random, SharedRandom]
+        strength: strong
+      - selectors: [atRandom, atRandom:, shuffled, shuffle, next:, nextInt:, shuffleBy:]
+        strength: strong
+  - id: statistics_linear_algebra
+    parent: numeric_computation
+    level: 3
+    name: Statistics and linear algebra
+    concept_type: general
+    definition: "Statistical summaries, matrices and vectors."
+    rules:
+      - global_patterns: ["^PM[A-Z]", "^DataFrame", "^AI[A-Z]", "Matrix$", "^Polymath"]
+        strength: strong
+      - selectors: [stdev, median, variance, mean, transpose, dot:, "+*", inverse, determinant, average]
+        strength: weak
+  - id: date_time_handling
+    parent: date_time
+    level: 3
+    name: Date and time handling
+    concept_type: general
+    definition: "Creating, comparing and formatting dates, times and durations."
+    rules:
+      - globals: [Date, Time, DateAndTime, Duration, Timespan, Month, Week, Year, ZTimestamp, ZTimezone]
+        strength: strong
+      - selectors: [now, today, asSeconds, asDuration, milliseconds, seconds, minutes, hours, days, asDate, asTime,
+                    millisecondClockValue, millisecondsToRun:, totalSeconds, julianDayNumber]
+        strength: weak
+
+  # ------------------------------------------------------------------ L3: control flow
+  - id: boolean_conditionals
+    parent: conditional_logic
+    level: 3
+    name: Boolean conditionals
+    concept_type: general
+    definition: "ifTrue:/ifFalse: style branching and boolean combinators."
+    rules:
+      - selectors: [ifTrue:, ifFalse:, ifTrue:ifFalse:, ifFalse:ifTrue:, and:, or:, "and:and:", "or:or:", not, xor:, caseOf:, caseOf:otherwise:]
+        strength: strong
+  - id: emptiness_nil_handling
+    parent: conditional_logic
+    level: 3
+    name: Nil and emptiness handling
+    concept_type: pharo_specific
+    definition: "Messages that branch on nil or empty receivers."
+    rules:
+      - selectors: [ifNil:, ifNotNil:, ifNil:ifNotNil:, ifNotNil:ifNil:, ifEmpty:, ifNotEmpty:, ifEmpty:ifNotEmpty:,
+                    ifNotEmpty:ifEmpty:, ifEmptyOrNil:, ifNotNilDo:, isNil, notNil, isNotNil, isEmptyOrNil]
+        strength: strong
+  - id: conditional_loops
+    parent: iteration_loops
+    level: 3
+    name: Condition- and count-controlled loops
+    concept_type: general
+    definition: "whileTrue:, to:do:, timesRepeat:, repeat."
+    rules:
+      - selectors: [whileTrue:, whileFalse:, whileTrue, whileFalse, to:do:, to:by:do:, timesRepeat:, repeat,
+                    whileNotNil:, whileNil:, to:collect:, to:by:collect:]
+        strength: strong
+  - id: exception_signaling
+    parent: exception_handling
+    level: 3
+    name: Signalling errors
+    concept_type: general
+    definition: "Raising errors or exceptions."
+    rules:
+      - selectors: [signal, signal:, error:, signalOn:, signalFor:, signal:with:, signalIn:, signalOn:reason:]
+        strength: strong
+      - global_patterns: ["Error$", "Exception$", "^Error$", "Warning$", "^SubscriptOutOfBounds", "^NotFound$", "^KeyNotFound$"]
+        strength: weak
+  - id: exception_handling_recovery
+    parent: exception_handling
+    level: 3
+    name: Handling and recovering from exceptions
+    concept_type: general
+    definition: "Catching exceptions, retrying, resuming and cleanup blocks."
+    rules:
+      - selectors: [on:do:, ensure:, ifCurtailed:, retry, return:, pass, resume, resume:, outer, retryUsing:, on:do:on:do:,
+                    valueWithUnwind, handles:, signalerContext, messageText, description]
+        strength: strong
+  - id: recursion
+    parent: recursion_traversal
+    level: 3
+    name: Recursion
+    concept_type: general
+    definition: "A method that sends its own selector to self (direct recursion)."
+    rules:
+      - features: [has_recursion]
+        strength: strong
+  - id: tree_graph_traversal
+    parent: recursion_traversal
+    level: 3
+    name: Tree and graph traversal
+    concept_type: general
+    definition: "Visiting nodes of trees or graphs (recursive descent over children, visitors, worklists)."
+    rules:
+      - features: [recursion_in_iteration]
+        strength: strong
+      - selectors: [allChildren, withAllChildren, allSubclasses, withAllSubclasses, allSuperclasses, withAllSuperclasses,
+                    deep:do:, deepCollect:, allParents, allSubclassesDo:, parent, children, neighbours, neighbors,
+                    outgoingEdges, incomingEdges, deepDo:, withDeepCollect:, allChildrenDo:]
+        strength: weak
+      - selectors: [deep:do:, deepCollect:, withDeepCollect:, deepDo:, allChildrenDo:, deep:collect:]
+        strength: strong
+      - global_patterns: ["^DeepTraverser", "^MalGraph", "^AIGraph", "^MalDijkstra", "^AIDijkstra"]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: I/O
+  - id: stream_reading_writing
+    parent: stream_io
+    level: 3
+    name: Stream reading and writing
+    concept_type: general
+    definition: "Consuming or producing data through streams."
+    rules:
+      - selectors: [nextPutAll:, nextPut:, readStream, writeStream, upToEnd, atEnd, nextLine, upTo:, skip:, peek,
+                    cr, tab, space, print:, crlf, lf, nextPutAll:, contents, next:, readStreamDo:, writeStreamDo:, "<<", "show:"]
+        strength: weak
+      - selectors: [nextPutAll:, nextPut:, readStream, writeStream, upToEnd, atEnd, upTo:, readStreamDo:, writeStreamDo:, nextLine]
+        strength: strong
+      - globals: [ReadStream, WriteStream, ReadWriteStream, ZnCharacterReadStream, ZnCharacterWriteStream, ZnBufferedReadStream, ZnNewLineWriterStream]
+        strength: strong
+  - id: file_operations
+    parent: file_system
+    level: 3
+    name: File and directory operations
+    concept_type: pharo_specific
+    definition: "Locating, reading, writing, creating and deleting files and directories."
+    rules:
+      - globals: [FileReference, FileLocator, FileSystem, FileStream, StandardFileStream, File, MultiByteFileStream, DiskStore]
+        strength: strong
+      - selectors: [asFileReference, ensureCreateFile, ensureCreateDirectory, ensureDelete, ensureDeleteAll, readStreamDo:,
+                    writeStreamDo:, fileExists, isFile, isDirectory, children, allChildrenMatching:, basename, extension,
+                    parent, fullName, fileNamed:, binaryReadStream, binaryWriteStream, workingDirectory, imageDirectory,
+                    copyTo:, moveTo:, exists, delete, asFileLocatorOrReference, pathString]
+        strength: weak
+      - selectors: [asFileReference, ensureCreateFile, ensureCreateDirectory, ensureDelete, ensureDeleteAll, binaryReadStream,
+                    binaryWriteStream, fileNamed:, allChildrenMatching:]
+        strength: strong
+  - id: http_networking
+    parent: network_communication
+    level: 3
+    name: HTTP and network clients/servers
+    concept_type: framework_specific
+    definition: "HTTP requests/responses, servers, sockets and URLs."
+    rules:
+      - global_patterns: ["^Zn(Client|Server|Request|Response|Url|Easy|Entity|Mime|Headers|Multi|Single|Web|Default|Manag)",
+                          "^Socket", "^Teapot", "^ZdcSocket", "^WebSocket", "^ZnWebSocket", "^NetNameResolver"]
+        strength: strong
+      - selectors: [get:, post:, url:, host:, port:, path:, queryAt:put:, entity:, contentType:, startOn:, onPort:,
+                    asUrl, asZnUrl, httpGet, request, response, statusCode, isSuccess]
+        strength: weak
+  - id: database_access
+    parent: persistence
+    level: 3
+    name: Database access and persistence
+    concept_type: framework_specific
+    definition: "Storing and querying data in relational, document or object databases."
+    rules:
+      - global_patterns: ["^VO[A-Z]", "^Glorp", "^Glorp", "^P3[A-Z]", "^SQLite3", "^Mongo", "^PunQLite", "^Soil",
+                          "^ODB", "^SSW", "^ReStore", "^Redis", "^Persistence", "^UDBC", "^DBX", "^OmniBase"]
+        strength: strong
+      - selectors: [execute:, query:, selectAll:, selectOne:where:, save, commit, beginTransaction, commitTransaction,
+                    rollbackTransaction, selectMany:where:, readOneOf:where:, readManyOf:where:, register:]
+        strength: weak
+  - id: os_processes_ffi
+    parent: external_processes_ffi
+    level: 3
+    name: OS processes and foreign function calls
+    concept_type: pharo_specific
+    definition: "Spawning OS processes, calling C libraries and manipulating external memory."
+    rules:
+      - global_patterns: ["^OSProcess", "^OSSUnixSubprocess", "^OSSVM", "^LibC$", "^FFI[A-Z]", "^ExternalAddress", "^ExternalStructure", "^LibGit", "^OSPlatform", "^OSEnvironment"]
+        strength: strong
+      - selectors: [ffiCall:, ffiCall:module:, ffiLibraryName, runCommand:, command:, waitForExit, system:, primitiveFailed]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: OO design
+  - id: object_instantiation
+    parent: object_lifecycle
+    level: 3
+    name: Object instantiation
+    concept_type: general
+    definition: "Creating new instances (new, new:, basicNew, factory methods)."
+    rules:
+      - features: [has_instance_creation]
+        strength: strong
+      - defines_selector_patterns: ["^new", "^with", "^on:", "^for:", "^from"]
+        side: class
+        strength: strong
+  - id: object_initialization
+    parent: object_lifecycle
+    level: 3
+    name: Object initialisation
+    concept_type: general
+    definition: "Setting up initial state of a new instance."
+    rules:
+      - defines_selectors: [initialize, initialize:, initialization, setUp, postCopy]
+        strength: strong
+      - defines_selector_patterns: ["^initialize", "^init[A-Z]", "^set[A-Z].*:"]
+        strength: strong
+  - id: state_access_modification
+    parent: object_lifecycle
+    level: 3
+    name: State access and modification
+    concept_type: general
+    definition: "Reading or updating instance variables (accessors, lazy initialisation, setters)."
+    rules:
+      - features: [is_getter]
+        strength: strong
+      - features: [is_setter]
+        strength: strong
+      - features: [writes_instance_variables]
+        strength: weak
+      - features: [is_lazy_initializer]
+        strength: strong
+  - id: super_delegation
+    parent: inheritance_polymorphism
+    level: 3
+    name: Super sends and extension of inherited behaviour
+    concept_type: general
+    definition: "Overriding a method and invoking the superclass implementation."
+    rules:
+      - features: [has_super_send]
+        strength: strong
+  - id: abstract_methods_dispatch
+    parent: inheritance_polymorphism
+    level: 3
+    name: Abstract methods, double dispatch and visitors
+    concept_type: general
+    definition: "Template methods, subclassResponsibility, accept:/visit*: double dispatch."
+    rules:
+      - selectors: [subclassResponsibility, shouldNotImplement, explicitRequirement]
+        strength: strong
+      - defines_selector_patterns: ["^accept:$", "^acceptVisitor:", "^visit[A-Z][A-Za-z]*:$"]
+        strength: strong
+      - selector_patterns: ["^visit[A-Z][A-Za-z]*:$", "^accept:$", "^acceptVisitor:$"]
+        strength: strong
+  - id: equality_hashing_comparison
+    parent: object_protocols
+    level: 3
+    name: Equality, hashing and comparison
+    concept_type: general
+    definition: "Defining or using =, hash and ordering comparisons."
+    rules:
+      - defines_selectors: ["=", hash, "<", "<=", ">", ">=", "~=", "isEqual:", "compare:", "threeWayCompareTo:"]
+        strength: strong
+      - selectors: ["=", "==", "~=", "~~", "<", ">", "<=", ">=", hash, "max:", "min:"]
+        strength: weak
+  - id: copying
+    parent: object_protocols
+    level: 3
+    name: Object copying
+    concept_type: general
+    definition: "Shallow/deep copies and postCopy."
+    rules:
+      - defines_selectors: [postCopy, copy, deepCopy, veryDeepCopy, shallowCopy, copyWith:]
+        strength: strong
+      - selectors: [copy, deepCopy, veryDeepCopy, shallowCopy, postCopy]
+        strength: strong
+  - id: object_printing
+    parent: object_protocols
+    level: 3
+    name: Object printing and display
+    concept_type: pharo_specific
+    definition: "Defining textual representations (printOn:, displayStringOn:)."
+    rules:
+      - defines_selectors: [printOn:, displayStringOn:, storeOn:, printString, displayString, gtDisplayOn:, printOn:base:]
+        strength: strong
+  - id: class_side_methods
+    parent: class_side_behavior
+    level: 3
+    name: Class-side methods
+    concept_type: pharo_specific
+    definition: "Behaviour defined on the class side (factories, defaults, singletons, settings, examples)."
+    rules:
+      - features: [is_class_side]
+        strength: strong
+  - id: singleton_class_state
+    parent: class_side_behavior
+    level: 3
+    name: Singletons and class-level state
+    concept_type: pharo_specific
+    definition: "Unique instances, class variables and class-side instance variables."
+    rules:
+      - defines_selectors: [default, uniqueInstance, current, instance, reset, resetUniqueInstance]
+        side: class
+        strength: strong
+      - features: [is_class_side, writes_instance_variables]
+        strength: strong
+      - features: [writes_class_variables]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: blocks
+  - id: block_evaluation_storage
+    parent: higher_order_blocks
+    level: 3
+    name: Block storage, passing and evaluation
+    concept_type: pharo_specific
+    definition: "Blocks stored in variables, passed to user-defined messages, or evaluated with value*/cull:."
+    rules:
+      - selectors: [value, value:, value:value:, value:value:value:, valueWithArguments:, cull:, cull:cull:,
+                    cull:cull:cull:, numArgs, valueWithPossibleArgs:, whenChangedDo:, onChangeDo:]
+        strength: weak
+      - features: [has_stored_block]
+        strength: strong
+      - features: [has_block_evaluation, has_block_argument_parameter]
+        strength: strong
+  - id: nonlocal_return
+    parent: higher_order_blocks
+    level: 3
+    name: Non-local returns
+    concept_type: pharo_specific
+    definition: "Returning from the enclosing method from inside a block."
+    rules:
+      - features: [has_nonlocal_return]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: reflection
+  - id: class_method_introspection
+    parent: introspection
+    level: 3
+    name: Class and method introspection
+    concept_type: pharo_specific
+    definition: "Querying classes, selectors, methods, instance variables and inheritance at run time."
+    rules:
+      - selectors: [respondsTo:, isKindOf:, isMemberOf:, instVarNamed:, instVarNamed:put:, instVarAt:, instVarAt:put:,
+                    allInstVarNames, instVarNames, selectors, methodDict, includesSelector:, canUnderstand:, lookupSelector:,
+                    compiledMethodAt:, allSubclasses, subclasses, superclass, inheritsFrom:, className, allInstances,
+                    allSelectors, methods, localMethods, allMethods, slots, allSlots, classVariables, isClass, isMeta,
+                    instanceSide, classSide, compiledMethodAt:ifAbsent:, sourceCodeAt:, slotNamed:, hasSlotNamed:, pragmas]
+        strength: strong
+      - selectors: [class, name, category, package]
+        strength: weak
+  - id: execution_context_access
+    parent: introspection
+    level: 3
+    name: Execution context access
+    concept_type: pharo_specific
+    definition: "Inspecting or manipulating the call stack through thisContext."
+    rules:
+      - features: [has_thisContext]
+        strength: strong
+      - selectors: [sender, receiver, method, home, stack, restart, signalerContext, findContextSuchThat:]
+        strength: weak
+  - id: dynamic_message_sending
+    parent: dynamic_invocation
+    level: 3
+    name: Dynamic message sending
+    concept_type: pharo_specific
+    definition: "perform: family and message reification."
+    rules:
+      - features: [has_dynamic_send]
+        strength: strong
+      - globals: [Message, MessageSend, WeakMessageSend]
+        strength: strong
+      - defines_selectors: [doesNotUnderstand:]
+        strength: strong
+  - id: code_compilation_generation
+    parent: code_generation
+    level: 3
+    name: Code compilation and class creation
+    concept_type: pharo_specific
+    definition: "Compiling source, creating/removing classes, methods and slots at run time."
+    rules:
+      - features: [has_metaprogramming]
+        strength: strong
+      - globals: [OpalCompiler, Compiler, ClassBuilder, ShiftClassInstaller, ShiftClassBuilder, Smalltalk]
+        selectors: [compile:, compile:classified:, evaluate:, newSubclass, subclass:instanceVariableNames:classVariableNames:package:]
+        strength: strong
+  - id: ast_program_analysis
+    parent: code_generation
+    level: 3
+    name: AST and program analysis
+    concept_type: pharo_specific
+    definition: "Parsing, traversing or rewriting Smalltalk ASTs and source code (refactoring, linting, tools)."
+    rules:
+      - global_patterns: ["^RB[A-Z][A-Za-z]*(Node|Parser|Visitor|Refactoring|Rule|Change|Scanner|Environment)", "^RBParser$",
+                          "^OC[A-Z]", "^IR[A-Z]", "^Opal", "^RG[A-Z]", "^Famix", "^FAMIX", "^Moose", "^Cly[A-Z]", "^ReRule"]
+        strength: strong
+      - selectors: [parseTree, ast, parseExpression:, parseMethod:, sourceCode, allChildren, isMessage, isVariable,
+                    isLiteralNode, acceptVisitor:]
+        strength: weak
+  - id: pragma_usage
+    parent: pragmas_and_traits
+    level: 3
+    name: Pragmas
+    concept_type: pharo_specific
+    definition: "Methods annotated with pragmas or code that queries pragmas."
+    rules:
+      - features: [has_pragmas]
+        strength: strong
+      - selectors: [pragmaAt:, pragmas, allNamed:in:, pragmasDo:, hasPragmaNamed:]
+        strength: strong
+      - globals: [Pragma, PragmaCollector]
+        strength: strong
+  - id: trait_composition
+    parent: pragmas_and_traits
+    level: 3
+    name: Trait composition
+    concept_type: pharo_specific
+    definition: "Methods defined in traits or in classes composed from traits."
+    rules:
+      - features: [in_trait]
+        strength: strong
+      - features: [class_uses_traits]
+        strength: weak
+  - id: global_environment_access
+    parent: introspection
+    level: 3
+    name: System and global environment access
+    concept_type: pharo_specific
+    definition: "Looking up globals and system facilities via Smalltalk/SystemNavigation."
+    rules:
+      - features: [has_global_environment_access]
+        strength: strong
+      - globals: [SystemNavigation, SessionManager, SmalltalkImage, RPackageOrganizer, PackageOrganizer, SystemAnnouncer]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: concurrency / events
+  - id: processes_synchronization
+    parent: concurrency
+    level: 3
+    name: Processes and synchronisation
+    concept_type: general
+    definition: "Forking processes, waiting, semaphores, mutexes and futures."
+    rules:
+      - selectors: [fork, forkAt:, forkNamed:, forkAt:named:, newProcess, critical:, wait, waitTimeoutMSecs:, resume,
+                    terminate, schedule, future, valueAfterWaiting:]
+        strength: weak
+      - globals: [Semaphore, Mutex, Monitor, Process, ProcessorScheduler, Processor, Delay, SharedQueue, WaitfreeQueue,
+                  AtomicSharedQueue, TKTFuture, TKTTask, TKTWorker, TKTConfiguration, Promise]
+        strength: strong
+      - selectors: [fork, forkAt:, forkNamed:, critical:, forkAt:named:, newProcess]
+        strength: strong
+  - id: announcements_observers
+    parent: event_handling
+    level: 3
+    name: Announcements and observers
+    concept_type: pharo_specific
+    definition: "Publishing and subscribing to events (Announcer, value holders, dependents)."
+    rules:
+      - globals: [Announcer, Announcement, SystemAnnouncer, NewValueHolder, ObservableValueHolder]
+        strength: strong
+      - selectors: [announce:, when:send:to:, when:do:, when:do:for:, subscribe:do:, unsubscribe:, announcer,
+                    whenChangedDo:, valueChanged, changed:, update:, addDependent:, removeDependent:, whenChangedSend:to:,
+                    notifyPropertyChanged:, property:whenChangedDo:]
+        strength: strong
+
+  # ------------------------------------------------------------------ L3: UI / graphics
+  - id: ui_presenters_widgets
+    parent: ui_construction
+    level: 3
+    name: Presenters, widgets and layouts
+    concept_type: framework_specific
+    definition: "Building UI components with Spec, Morphic, Bloc/Brick or Toplo."
+    rules:
+      - global_patterns: ["^Sp[A-Z]", "^Morph$", "[A-Za-z]Morph$", "^Bl[A-Z]", "^Br[A-Z]", "^To[A-Z][a-z]+(Element|Button|Label)",
+                          "^ComposablePresenter", "^Gt[A-Z].*(View|Element|Pane)", "^Cm[A-Z]", "^Glamour", "^GLM", "^StPresenter"]
+        strength: strong
+      - selectors: [newButton, newLabel, newList, newTable, newTextInput, newTree, layout:, defaultLayout, initializePresenters,
+                    connectPresenters, open, openWithSpec, openInWindow, addChild:, layout, presenter, whenSelectionChangedDo:,
+                    action:, label:, icon:, openInWorld, addMorph:, newRow:, newColumn:]
+        strength: weak
+      - defines_selectors: [initializePresenters, defaultLayout, connectPresenters, defaultSpec, initializeWidgets, initializeWindow:]
+        strength: strong
+  - id: web_rendering
+    parent: ui_construction
+    level: 3
+    name: Web page rendering
+    concept_type: framework_specific
+    definition: "Generating HTML/web components (Seaside canvas rendering, templates)."
+    rules:
+      - global_patterns: ["^WA[A-Z]", "^JQ[A-Z]", "^Mustache", "^ZnHtml"]
+        strength: strong
+      - defines_selectors: [renderContentOn:, children, updateRoot:, style, script]
+        strength: weak
+      - defines_selectors: [renderContentOn:]
+        strength: strong
+  - id: shapes_canvas_rendering
+    parent: graphics_visualization
+    level: 3
+    name: Shapes, canvas and visualisation
+    concept_type: framework_specific
+    definition: "Drawing shapes, charts and visualisations (Roassal, Athens, Form)."
+    rules:
+      - global_patterns: ["^RS[A-Z]", "^RT[A-Z]", "^Athens", "^Form$", "^Color$", "^Rectangle$", "^Canvas", "^AeCairo", "^Sparta",
+                          "^GraphicsContext"]
+        strength: strong
+      - selectors: ["@", extent:, color:, position:, corner:, translateTo:, width:, height:, border:, borderColor:, fillColor:]
+        strength: weak
+
+  # ------------------------------------------------------------------ L3: testing / diagnostics
+  - id: unit_test_assertions
+    parent: unit_testing
+    level: 3
+    name: Test methods and assertions
+    concept_type: general
+    definition: "SUnit tests and assertions."
+    rules:
+      - selectors: [assert:, assert:equals:, deny:, deny:equals:, should:raise:, shouldnt:raise:, assert:description:,
+                    assertCollection:hasSameElements:, assertEmpty:, denyEmpty:, assert:closeTo:, skip, skip:, fail, should:]
+        is_test: true
+        strength: strong
+      - defines_selector_patterns: ["^test"]
+        is_test: true
+        strength: strong
+  - id: test_fixtures
+    parent: unit_testing
+    level: 3
+    name: Test fixtures and resources
+    concept_type: general
+    definition: "setUp/tearDown and test resources."
+    rules:
+      - defines_selectors: [setUp, tearDown, setUpClass, tearDownClass, resources]
+        is_test: true
+        strength: strong
+  - id: logging_tracing
+    parent: logging_debugging
+    level: 3
+    name: Logging, tracing and debugging
+    concept_type: general
+    definition: "Transcript output, logging frameworks, inspection and halts."
+    rules:
+      - globals: [Transcript, TranscriptLogger, Beacon, StringSignal, MemoryLogger, CircularMemoryLogger, TinyLogger]
+        strength: strong
+      - selectors: [traceCr, traceCr:, crTrace, show:, crShow:, logCr, logCr:, inspect, halt, halt:, haltIf:, haltOnce,
+                    record, emit, crLog, log:, debug:]
+        strength: strong

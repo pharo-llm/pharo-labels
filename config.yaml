@@ -1,0 +1,113 @@
+# PharoTaskMiner configuration. Every key has a documented default in
+# src/pharo_task_miner/config.py; this file only needs what you change.
+
+project:                             # everything a run produces goes under results/
+  data_dir: results/data
+  output_dir: results
+  validation_dir: results/validation
+  database: results/data/processed/pharo_task_miner.sqlite
+
+github:
+  token_env: GITHUB_TOKEN
+  cache_dir: results/data/raw/api_cache     # raw API responses, kept for auditing and resume
+  cache_ttl_hours: null             # null = never expire (reproducible re-runs); use --refresh to re-fetch
+  discovery:
+    start_date: "2008-01-01"
+    topics:
+      - pharo
+      - smalltalk
+    languages:
+      - Smalltalk
+    organizations:
+      - pharo-project
+      - pharo-contributions
+    indicator_repository_queries:
+      - "pharo in:readme"
+      - "BaselineOf in:readme"
+      - "Metacello in:readme"
+      - "tonel in:readme"
+    indicator_code_queries:          # code search requires a token
+      - "filename:.smalltalk.ston"
+      - "BaselineOf extension:st"
+    curated_lists: []                # e.g. [data/curated/experts.csv] with a full_name column
+
+repositories:
+  include_archived: true
+  include_forks: false
+  max_repositories: 500
+  clone_depth: 1
+  clone_dir: results/data/repositories
+  existing_clone_dirs: []            # other folders with owner__repo clones to reuse as-is
+  accepted_pharo_status: [confirmed_pharo, probable_pharo]
+
+sampling:
+  strategy: stratified               # all | random | stratified | diversity | manual
+  sample_size: 50
+  random_seed: 42
+  max_per_owner: 5
+  manual_selection_file: null        # CSV with a full_name column (strategy: manual)
+
+parsing:
+  backend: python                    # python | pharo (needs pharo_vm + pharo_image)
+  pharo_vm: null
+  pharo_image: null
+  primary_format: tonel
+  export_ast: true                   # ASTs go to data/parsed/*.jsonl.gz
+  include_tests: true
+  include_extension_methods: true
+
+analysis:
+  extract_message_sends: true
+  extract_blocks: true
+  extract_control_flow: true
+  extract_api_usage: true
+
+classification:
+  domains:
+    multi_label: true
+    allow_unknown: true
+    semantic_analysis: false
+  operations:
+    multi_label: true
+    allow_unknown: true
+    semantic_analysis: false         # LLM descriptions for a capped, stratified subset only
+
+semantic:                            # optional local LLM; models are listed in models.yaml
+  models_file: models.yaml
+  use: null                          # null = the default in models.yaml; or a name / any Ollama tag
+  max_methods: 200
+
+validation:
+  require_human_review: true         # taxonomy/statistics/reports wait for reviewed labels
+  label_source: auto                 # reviewed labels to use: auto (human if imported, else LLM) | human | llm
+  annotation_sample_size: 300
+  overlap_fraction: 0.3
+  annotators: [annotator_1, annotator_2]
+
+llm_annotation:                      # ./2-ai-labelling.sh sets these from its SETTINGS block
+  models: []                         # annotators: names from models.yaml (or Ollama tags)
+  adjudicator: null                  # optional model that resolves disagreements
+  consensus: majority                # majority | unanimous (when there is no adjudicator)
+  evidence_policy: enforce           # enforce: drop labels without verbatim evidence | record
+  spotcheck_size: 30                 # items exported for a blind human spot-check
+  random_seed: 42
+
+snapshot:                            # results saved on the Hugging Face Hub (./snapshot.sh, used by the step scripts)
+  repo: pharo-llm/pharo-labels       # dataset id (huggingface.co/datasets/<repo>)
+  revision: main                     # what 1-mining.sh downloads: main = latest, or a tag like snapshot-20261009-153000
+  include_api_cache: true            # raw GitHub API responses (e-mails are redacted); enables offline re-runs
+  include_clones: false              # cloned third-party repositories (re-downloadable from the recorded commits)
+
+statistics:
+  bootstrap_iterations: 1000
+  random_seed: 42
+  exclude_tests: false
+
+benchmarks:
+  inputs: []                         # e.g. [benchmarks/my_benchmark.json]
+
+output:
+  formats:
+    - jsonl
+    - csv
+    - markdown

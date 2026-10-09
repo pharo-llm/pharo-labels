@@ -1,0 +1,51 @@
+# Mapping from referenced global names to frameworks/APIs (Module 7).
+# A reference is attributed to the first framework whose exact name or prefix
+# regex matches. Prefixes are heuristics (e.g. "WA" for Seaside) and every
+# attribution is stored with the matched rule so it can be audited.
+version: "0.1"
+frameworks:
+  - {name: Pharo-Collections, kind: core, exact: [OrderedCollection, Array, Set, Bag, Dictionary, IdentityDictionary, IdentitySet, SortedCollection, Interval, LinkedList, Association, SmallDictionary, OrderedDictionary, ByteArray, WordArray, Array2D, Stack, WeakArray, WeakSet, WeakKeyDictionary]}
+  - {name: Pharo-Kernel, kind: core, exact: [Object, String, Symbol, Character, Number, Integer, SmallInteger, LargePositiveInteger, Float, Fraction, ScaledDecimal, Boolean, UndefinedObject, Point, Rectangle, Date, Time, DateAndTime, Duration, Smalltalk, Processor, Semaphore, Mutex, Delay, Process, Random, Error, Exception, Warning, Notification, ZeroDivide, MessageNotUnderstood, NotFound, KeyNotFound, SubscriptOutOfBounds, Transcript, Class, Metaclass, Behavior, CompiledMethod, Context, Message, MessageSend, Pragma, Announcer, Announcement, ReadStream, WriteStream, ReadWriteStream, Color, Form, Cursor, WideString, ByteString, ByteSymbol, Text, TextAttribute, Halt, AssertionFailure, ExceptionSet, Unicode, Slot, InstanceVariableSlot, SystemNavigation, SessionManager, RPackage, RPackageOrganizer, Author]}
+  - {name: SUnit, kind: core, exact: [TestCase, TestSuite, TestResult, TestResource, ParametrizedTestCase, TestAsserter], prefixes: ['^TestCase']}
+  - {name: FileSystem, kind: core, exact: [FileReference, FileLocator, FileSystem, File, FileStream, DiskStore, MemoryStore, Path, RelativePath, AbsolutePath]}
+  - {name: Zinc, kind: framework, prefixes: ['^Zn[A-Z]']}
+  - {name: Seaside, kind: framework, prefixes: ['^WA[A-Z]', '^JQ[A-Z]', '^GR[A-Z]']}
+  - {name: Teapot, kind: framework, prefixes: ['^Teapot', '^Tea[A-Z]']}
+  - {name: Roassal, kind: framework, prefixes: ['^RS[A-Z]', '^RT[A-Z]', '^NS[A-Z]', '^RSChart']}
+  - {name: Bloc, kind: framework, prefixes: ['^Bl[A-Z]', '^BA[A-Z]']}
+  - {name: Brick, kind: framework, prefixes: ['^Br[A-Z]']}
+  - {name: Toplo, kind: framework, prefixes: ['^To[A-Z][a-z]']}
+  - {name: Spec, kind: framework, prefixes: ['^Sp[A-Z]', '^ComposablePresenter', '^SpecPresenter', '^St[A-Z][a-z]+Presenter']}
+  - {name: Morphic, kind: framework, prefixes: ['Morph$', '^Morph', '^PluggableTextMorph', '^World$', '^UITheme']}
+  - {name: Athens, kind: framework, prefixes: ['^Athens', '^Ae[A-Z]', '^Sparta']}
+  - {name: Voyage, kind: framework, prefixes: ['^VO[A-Z]', '^Voyage']}
+  - {name: Glorp, kind: framework, prefixes: ['^Glorp', '^Glorp[A-Z]', '^DatabaseAccessor', '^DescriptorSystem', '^DatabaseTable']}
+  - {name: P3, kind: framework, prefixes: ['^P3[A-Z]']}
+  - {name: SQLite3, kind: framework, prefixes: ['^SQLite3']}
+  - {name: Mongo, kind: framework, prefixes: ['^Mongo']}
+  - {name: NeoJSON, kind: framework, prefixes: ['^NeoJSON']}
+  - {name: NeoCSV, kind: framework, prefixes: ['^NeoCSV']}
+  - {name: STON, kind: framework, prefixes: ['^STON']}
+  - {name: Fuel, kind: framework, prefixes: ['^FL[A-Z]']}
+  - {name: XML, kind: framework, prefixes: ['^XML[A-Z]']}
+  - {name: PetitParser, kind: framework, prefixes: ['^PP[A-Z]', '^PP2']}
+  - {name: SmaCC, kind: framework, prefixes: ['^SmaCC']}
+  - {name: Refactoring, kind: core, prefixes: ['^RB[A-Z]', '^ReRule', '^Re[A-Z][a-z]+Rule']}
+  - {name: Opal, kind: core, prefixes: ['^OC[A-Z]', '^Opal', '^IR[A-Z]']}
+  - {name: Iceberg, kind: framework, prefixes: ['^Ice[A-Z]', '^LGit', '^Iceberg']}
+  - {name: Metacello, kind: core, prefixes: ['^Metacello', '^BaselineOf', '^ConfigurationOf']}
+  - {name: Moose, kind: framework, prefixes: ['^Moose', '^MooseModel', '^Famix', '^FAMIX', '^FM[A-Z]', '^FQ[A-Z]']}
+  - {name: Calypso, kind: framework, prefixes: ['^Cly[A-Z]', '^ClyBrowser']}
+  - {name: Commander, kind: framework, prefixes: ['^Cm[A-Z]', '^CmdCommand']}
+  - {name: TaskIt, kind: framework, prefixes: ['^TKT']}
+  - {name: OSSubprocess, kind: framework, prefixes: ['^OSSUnix', '^OSSVM', '^OSProcess']}
+  - {name: UFFI, kind: core, prefixes: ['^FFI[A-Z]', '^ExternalAddress', '^ExternalStructure', '^TFFI']}
+  - {name: Microdown, kind: framework, prefixes: ['^Mic[A-Z]']}
+  - {name: Pillar, kind: framework, prefixes: ['^Pr[A-Z][a-z]', '^Pillar']}
+  - {name: Mustache, kind: framework, prefixes: ['^Mustache']}
+  - {name: PolyMath, kind: framework, prefixes: ['^PM[A-Z]']}
+  - {name: PharoAI, kind: framework, prefixes: ['^AI[A-Z]']}
+  - {name: DataFrame, kind: framework, prefixes: ['^DataFrame', '^DataSeries']}
+  - {name: GlamorousToolkit, kind: framework, prefixes: ['^Gt[A-Z]', '^GLM']}
+  - {name: Beacon, kind: framework, prefixes: ['^Beacon', '^MemoryLogger', '^StringSignal']}
+  - {name: Mocketry, kind: framework, prefixes: ['^Mock[A-Z]', '^Mocketry', '^StateSpecs']}
