@@ -65,7 +65,7 @@ Individual stages: `.venv/bin/pharo-miner --help`.
 | `benchmarks/` | Format for importing existing benchmark tasks |
 | `docs/` | The documentation, one page per script |
 | `1-mining.sh`, `1-2-filtering.sh`, `2-ai-labelling.sh`, `3-results.sh` | Steps 1 to 3 (settings at the top of each file) |
-| `submit-gpu.sh` | Finds a free GPU node on any Grid'5000 site and starts `job.oar.sh` on it |
+| `submit-gpu.sh` | Shows the free GPU nodes of every Grid'5000 site and submits `job.oar.sh` on the one you choose (self-contained) |
 | `job.oar.sh` | All steps as one OAR cluster job (installs and runs Ollama on the node) |
 | `4-benchmark.sh` | Step 4: generate and validate benchmark tasks (see `docs/4-benchmark.md`) |
 | `pharo/BenchmarkHarness/` | The scripts that validate a task inside the Pharo image |

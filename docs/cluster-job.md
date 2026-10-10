@@ -20,47 +20,50 @@ nano job.oar.sh                 # edit the SETTINGS block
 
 ## On a GPU node: `./submit-gpu.sh`
 
-The job is the same on a GPU node, and much faster: Ollama uses the GPUs by itself. You do
-not have to look for a free node, or even for a site. On any Grid'5000 frontend, from the
-repository folder:
+The job is the same on a GPU node, and much faster: Ollama uses the GPUs by itself.
+`submit-gpu.sh` shows which GPU nodes are free on every Grid'5000 site and asks where to
+submit. Run it on any frontend, from the repository folder:
 
 ```bash
-./submit-gpu.sh
+./submit-gpu.sh                  # show the free GPUs of every site, then ask where to submit
+./submit-gpu.sh --list           # only show them
+./submit-gpu.sh --yes            # submit on the strongest free one without asking
+./submit-gpu.sh --cluster chuc   # submit on this cluster (the job waits if it is busy)
 ```
 
-1. The script asks the Grid'5000 API for the GPU clusters of **every site** and orders them,
-   most GPU memory per node first. No cluster name is written in the script.
-2. It submits the job on each cluster in turn and keeps the first one where it starts within
-   30 seconds. A busy cluster is skipped (the job is withdrawn).
-3. If all are busy, the job is left in the queue of the site with the most GPU nodes and
-   starts there on the first one that becomes free.
+For each site it says how many GPU clusters are free, and for each free one: the GPUs and
+their memory, how many nodes are free (and for how long, when a reservation is coming), the
+processor and memory of the node, the queue and the longest job it allows. You answer with
+the number of the one you want, or `n` for nothing.
 
-Each site has its own home directory. Before trying a cluster of another site, the script
-copies the code and `.env` to the same folder there (`results/` is not copied). **The results
-are on the site where the job ran**; the script prints which one and the commands to follow
-the job. To continue a run that hit its walltime, set `SITES` to that site and run the script
-again.
+The file is self-contained: it does not use anything else from this project, and can be
+copied into another one. It submits the script named in `JOB_SCRIPT` (or given as argument).
+
+Each site has its own home directory. When the cluster you choose is on another site, the
+folder is copied there first (without `results/` and `.venv/`), and **the job runs and writes
+its results on that site**. The script prints the commands to follow and stop the job.
 
 | Setting (top of `submit-gpu.sh`) | Meaning |
 |---|---|
-| `SITES` | Sites to look at. Empty = all of Grid'5000 |
-| `MIN_GPU_GB` | GPU memory a node needs in total (90): the three models need about 80 GB together |
+| `JOB_SCRIPT` | The script to submit (`job.oar.sh`) |
 | `WALLTIME_HOURS` | 72. A cluster that allows less gets its own maximum |
-| `USE_DEFAULT_QUEUE` | `yes`: also the GPU clusters of the `default` queue. `no`: only the `abaca` queue |
-| `START_TIMEOUT` | Seconds to wait for the job to start before trying the next cluster |
-| `WAIT_IF_BUSY` | `yes`: queue the job when everything is busy. `no`: stop |
-| `DRY_RUN` | `yes`: only list the clusters that would be tried, in order |
+| `SITES` | Sites to look at. Empty = all of Grid'5000 |
+| `MIN_GPU_GB` | Only show nodes with at least this much GPU memory in total. `0` = all |
+| `DO_NOT_COPY` | What is not copied to another site |
+| `START_TIMEOUT` | Seconds to wait to see whether the job started |
 
 Things to know:
 
-- Only x86 nodes with Nvidia GPUs are considered. Old cards (Tesla P100 and V100) are tried
-  after all the others: they run an older driver environment. The job prints whether a GPU
-  was detected; if Ollama falls back to the CPU on such a node, stop the job and run the
-  script again.
-- A cluster your account cannot use is skipped.
+- The biggest model of the job (`llama3.3:70b`) needs 43 GB of GPU memory. On a node with
+  less, it still runs, but partly on the processor and more slowly. The list shows the
+  memory of each node so that you can choose.
+- Old cards (Tesla P100 and V100) are listed after the others: they run an older driver
+  environment. The job prints whether a GPU was detected.
 - Clusters of the `default` queue are subject to the Grid'5000 usage policy, which limits
-  long jobs during working hours. The script says when the job landed on one. Set
-  `USE_DEFAULT_QUEUE="no"` to stay on the `abaca` queue.
+  long jobs during working hours. The script says so when you choose one and gives the
+  command that checks it (`usagepolicycheck -t`).
+- A home directory holds 25 GB by default on each site; this job needs more for `results/`.
+  Ask for a quota extension on the site you use.
 
 ## Before submitting
 

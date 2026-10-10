@@ -17,7 +17,7 @@
 #   4. ./4-benchmark.sh     one model writes benchmark tasks, a Pharo image validates them,
 #                           another model solves them (RUN_BENCHMARK=no skips this step)
 #
-#   ./submit-gpu.sh                 finds a free GPU node on any site and starts this job on it:
+#   ./submit-gpu.sh                 shows the free GPU nodes of every site and submits this job on one:
 #                                   the same job, much faster. Ollama uses the GPUs by itself.
 #   oarsub -S ./job.oar.sh          submit on the CPU node named in the #OAR lines above
 #   bash job.oar.sh                 or run it directly on a reserved node
