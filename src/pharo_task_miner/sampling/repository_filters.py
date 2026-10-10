@@ -6,6 +6,8 @@ combined into a single quality score. Every exclusion is recorded with a reason.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 import re
 
 from ..storage.database import Database, loads
@@ -13,6 +15,31 @@ from ..storage.database import Database, loads
 FRAMEWORK_RX = re.compile(r"\b(library|framework|binding|bindings|wrapper|api|toolkit|package|implementation of)\b", re.I)
 APPLICATION_RX = re.compile(r"\b(application|app|tool|game|simulator|editor|browser|client|bot|website|demo)\b", re.I)
 EDU_RX = re.compile(r"\b(tutorial|course|mooc|exercises?|kata|students?|teaching|lecture|homework|advent of code|book)\b", re.I)
+
+# Coursework, tutorials and programming puzzles: repositories written to learn or to be graded,
+# not to be used. Deliberately narrow (words such as "test", "demo" or "example" also name real
+# libraries); what it misses is bounded by the other criteria and by sampling.max_per_owner.
+COURSEWORK_DESCRIPTION_RX = re.compile(
+    r"\b(tutorial|course(work)?|mooc|exercises?|katas?|students?|teaching|lecture|homework|assignments?|"
+    r"advent of code|trabajo pr[aá]ctico|my first)\b", re.I)
+COURSEWORK_NAME_RX = re.compile(
+    r"(^|[-_.])(tutorial|course|mooc|exercises?|katas?|homework|assignments?|advent|adventofcode|aoc|"
+    r"tp|oo[12]|poo|objetos)(?=[-_.]|\d|$)|^20\d\d[-_]|cuoora|tp\d+$", re.I)  # ^20dd- : classroom repositories named by year
+COURSEWORK_OWNER_RX = re.compile(r"(^|[-_])(teaching|classroom|students?|course)(?=[-_]|$)", re.I)
+
+
+def is_coursework(owner: str | None, name: str | None, description: str | None) -> bool:
+    return bool(COURSEWORK_DESCRIPTION_RX.search(description or "") or COURSEWORK_NAME_RX.search(name or "")
+                or COURSEWORK_OWNER_RX.search(owner or ""))
+
+
+def selection_digest(cfg) -> str:
+    """Fingerprint of the settings that decide which repositories are analysed. It is stored
+    with every sample, so a later run can tell that the settings changed and select again."""
+    rcfg = cfg["repositories"]
+    keys = ("accepted_pharo_status", "include_archived", "include_forks", "max_repositories", "quality")
+    data = {"repositories": {k: rcfg.get(k) for k in keys}, "sampling": cfg["sampling"]}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 def size_category(n_files: int | None, thresholds: dict) -> str:
@@ -58,6 +85,9 @@ def repository_profiles(db: Database, cfg) -> list[dict]:
             "stars": r["stars"] or 0, "forks": r["forks"] or 0, "contributors": r["contributors"],
             "commit_count": r["commit_count"], "license": r["license"],
             "n_source_files": n_files, "n_packages": tree.get("n_packages"),
+            # Tonel and FileTree files are what the parser reads methods from; None = tree not collected
+            "n_pharo_source_files": ((tree.get("n_tonel_files") or 0) + (tree.get("n_filetree_method_files") or 0)
+                                     if "n_tonel_files" in tree or "n_filetree_method_files" in tree else None),
             "n_classes": snap["n_classes"] if snap is not None else None,
             "n_methods": snap["n_methods"] if snap is not None else None,
             "lines_of_code": snap["n_lines"] if snap is not None else None,
@@ -71,6 +101,7 @@ def repository_profiles(db: Database, cfg) -> list[dict]:
             "primary_domain": labels[0] if labels else "unknown", "domains": labels,
             "project_kind": kind,
             "educational": "education" in labels or bool(EDU_RX.search(r["description"] or "")),
+            "coursework": is_coursework(r["owner"], r["name"], r["description"]),
             "core_infrastructure": (r["owner"] or "").lower() in core,
             "duplicates": dups.get(r["repo_id"], []),
         })
@@ -95,4 +126,28 @@ def eligibility(p: dict, cfg) -> tuple[bool, str]:
             return False, f"{kind} of repository {canonical}"
     if p["n_source_files"] == 0:
         return False, "no Smalltalk source files"
+    return quality(p, rcfg.get("quality") or {})
+
+
+def quality(p: dict, q: dict) -> tuple[bool, str]:
+    """Explicit, separately reported inclusion criteria (no combined score). They are checked in
+    this order and the first one that fails is the recorded reason, so the reason counts in
+    repository_selection.md read as a filtering funnel. A criterion that is 0/false is off; a
+    value that was never measured (None) does not exclude."""
+    n = p.get("n_pharo_source_files")
+    if q.get("require_pharo_source") and n == 0:
+        return False, "quality: no Pharo package source (Tonel/FileTree)"
+    if q.get("exclude_coursework") and p.get("coursework"):
+        return False, "quality: coursework, tutorial or programming puzzle"
+    m = int(q.get("min_commits") or 0)
+    if m and p.get("commit_count") is not None and p["commit_count"] < m:
+        return False, f"quality: fewer than {m} commits"
+    m = int(q.get("min_pharo_source_files") or 0)
+    if m and n is not None and n < m:
+        return False, f"quality: fewer than {m} Pharo source files"
+    if q.get("require_tests") and p.get("has_tests") is False:
+        return False, "quality: no tests"
+    if q.get("require_external_interest") and p.get("contributors") is not None \
+            and p["contributors"] < 2 and not p["stars"] and not p["forks"]:
+        return False, "quality: single author, no star, no fork"
     return True, "eligible"

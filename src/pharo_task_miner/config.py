@@ -50,6 +50,9 @@ DEFAULTS: dict = {
         "core_owners": ["pharo-project", "pharo-contributions", "pharo-spec", "pharo-graphics", "pharo-vcs",
                         "pharo-ide", "pharo-nosql", "pharo-rdbms", "pharo-containers", "pharo-ai"],
         "clone_timeout_seconds": 900,
+        # inclusion criteria, all off by default (see sampling.repository_filters.quality)
+        "quality": {"require_pharo_source": False, "exclude_coursework": False, "min_commits": 0,
+                    "min_pharo_source_files": 0, "require_tests": False, "require_external_interest": False},
     },
     "sampling": {"strategy": "stratified", "sample_size": 50, "random_seed": 42, "max_per_owner": 5,
                   "manual_selection_file": None, "strata": ["primary_domain", "size_category"],

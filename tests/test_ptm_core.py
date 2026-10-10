@@ -17,6 +17,7 @@ from pharo_task_miner.analysis.domain_classifier import DomainClassifier  # noqa
 from pharo_task_miner.analysis.semantic_classifier import validate_method_output  # noqa: E402
 from pharo_task_miner.discovery.pharo_detection import Listing, verify  # noqa: E402
 from pharo_task_miner.sampling.diversity_sampling import sample  # noqa: E402
+from pharo_task_miner.sampling.repository_filters import is_coursework, quality  # noqa: E402
 from pharo_task_miner.statistics.uncertainty import wilson  # noqa: E402
 from pharo_task_miner.validation.agreement import cohen_kappa, krippendorff_alpha_binary  # noqa: E402
 from pharo_task_miner.config import load_yaml  # noqa: E402
@@ -281,6 +282,33 @@ class StatsSamplingValidationTests(unittest.TestCase):
             b, _, _ = sample(pool, strat, 6, 7, cfg)
             self.assertEqual([p["repo_id"] for p in a], [p["repo_id"] for p in b])
             self.assertLessEqual(max(sum(1 for p in a if p["owner"] == o) for o in ("o0", "o1", "o2")), 3)
+
+    def test_quality_criteria_give_the_first_failing_reason(self):
+        q = {"require_pharo_source": True, "exclude_coursework": True, "min_commits": 10,
+             "min_pharo_source_files": 10, "require_tests": True, "require_external_interest": True}
+        good = {"n_pharo_source_files": 40, "coursework": False, "commit_count": 120, "has_tests": True,
+                "contributors": 1, "stars": 3, "forks": 0}
+        self.assertEqual(quality(good, q), (True, "eligible"))
+        for change, reason in (({"n_pharo_source_files": 0}, "no Pharo package source"), ({"coursework": True}, "coursework"),
+                               ({"commit_count": 9}, "fewer than 10 commits"),
+                               ({"n_pharo_source_files": 9}, "fewer than 10 Pharo source files"),
+                               ({"has_tests": False}, "no tests"), ({"stars": 0}, "single author")):
+            ok, why = quality({**good, **change}, q)
+            self.assertFalse(ok)
+            self.assertIn(reason, why)
+        # criteria that are off, and values that were never measured, do not exclude
+        self.assertTrue(quality({**good, "commit_count": 1, "has_tests": False}, {})[0])
+        self.assertTrue(quality({**good, "commit_count": None, "n_pharo_source_files": None, "has_tests": None}, q)[0])
+
+    def test_coursework_detection(self):
+        for owner, name, desc in (("dvmason", "AdventOfCode2021", None), ("uca-argentina", "2025-tdd-lovers", None),
+                                  ("hpi-swa-teaching", "PixelEditor", None), ("x", "OO2-TP1", None), ("x", "CuOOraTp7", None),
+                                  ("x", "Thing", "Homework for the Pharo MOOC")):
+            self.assertTrue(is_coursework(owner, name, desc), (owner, name))
+        for owner, name, desc in (("SeasideSt", "Seaside", "The framework for developing web applications"),
+                                  ("hpi-swa", "smalltalkCI", "Framework for testing Smalltalk projects"),
+                                  ("pharo-project", "pharo-launcher", None), ("astares", "Pharo-Examples-Lab", None)):
+            self.assertFalse(is_coursework(owner, name, desc), (owner, name))
 
 
 class ExtractionTests(unittest.TestCase):

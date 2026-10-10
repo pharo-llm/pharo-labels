@@ -34,14 +34,29 @@ github:
 repositories:
   include_archived: true
   include_forks: false
-  max_repositories: 500
+  max_repositories: 0                # cap for strategy "all"; 0 = no cap
   clone_depth: 1
   clone_dir: results/data/repositories
   existing_clone_dirs: []            # other folders with owner__repo clones to reuse as-is
   accepted_pharo_status: [confirmed_pharo, probable_pharo]
+  # Which repositories are worth analysing. Each criterion is separate (no combined score) and
+  # every excluded repository is listed with the criterion it failed in
+  # results/tables/repository_selection.csv; the counts are in results/reports/repository_selection.md.
+  # Stars are deliberately not a threshold: half of the Pharo repositories have none.
+  quality:
+    require_pharo_source: true       # at least one Tonel/FileTree file: a README that mentions Pharo is not enough
+    exclude_coursework: true         # homework, tutorials, katas, Advent of Code, classroom repositories
+    min_commits: 10                  # some development history, not a one-off upload
+    min_pharo_source_files: 10       # roughly 10 classes: not a toy
+    require_tests: true              # has test classes
+    require_external_interest: true  # at least 2 contributors, or 1 star, or 1 fork: not purely personal
 
 sampling:
-  strategy: stratified               # all | random | stratified | diversity | manual
+  # all = analyse every repository that passes repositories.quality (about 1,600): no sampling
+  # to argue about. The other strategies draw sample_size repositories from them.
+  # Changing anything here or in repositories.quality is picked up by ./1-mining.sh on its own:
+  # it selects again and redoes cloning, parsing and the annotation sample (no GitHub search).
+  strategy: all                      # all | random | stratified | diversity | manual
   sample_size: 50
   random_seed: 42
   max_per_owner: 5

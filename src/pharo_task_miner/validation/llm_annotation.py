@@ -345,7 +345,7 @@ def annotate_with(prov, prompt: Prompt, items: list[dict], cache: ResponseCache,
     out, todo = {}, []
     for it in items:
         hit = cache.get(it["sample_id"], key)
-        if hit:
+        if hit and str(hit.get("method_id")) == str(it.get("method_id")):  # sample ids are reused when the sample is redrawn
             out[it["sample_id"]] = hit
         else:
             todo.append(it)
@@ -393,11 +393,11 @@ def adjudicate_with(prov, prompt: Prompt, items: dict[str, dict], disagreements:
         cands = list(cands)
         random.Random(f"{seed}:{sid}").shuffle(cands)  # anonymise: order carries no model identity
         ckey = base + hashlib.sha256(json.dumps([sorted(c["labels"]) for c in cands]).encode()).hexdigest()[:8]
+        item = items[sid]
         hit = cache.get(sid, ckey)
-        if hit:
+        if hit and str(hit.get("method_id")) == str(item.get("method_id")):
             out[sid] = hit
             continue
-        item = items[sid]
         user = prompt.adjudication_user(item, cands)
         comp = prov.complete(prompt.system, user, prompt.schema, "adjudication")
         dec = interpret(comp.parsed, item, valid, evidence_policy) if comp.parsed is not None and comp.error is None else None

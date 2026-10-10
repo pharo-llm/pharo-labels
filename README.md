@@ -44,6 +44,35 @@ open the figure on macOS with:
 open results/figures/taxonomy.png
 ```
 
+### Which repositories are analysed
+
+The GitHub search is wide on purpose (about 20,000 candidates), so a filter
+decides which ones are worth analysing. The criteria are in `config.yaml` under
+`repositories.quality`; each is separate (no combined score):
+
+| Criterion | Removes |
+|---|---|
+| Has Tonel or FileTree source | Repositories that only mention Pharo in a README |
+| Not coursework, a tutorial or a puzzle | Homework, katas, Advent of Code, classroom repositories |
+| At least 10 commits | One-off uploads |
+| At least 10 Pharo source files | Toys |
+| Has tests | Code without any test class |
+| 2 contributors, or a star, or a fork | Purely personal repositories |
+
+Stars are not a threshold: half of the Pharo repositories have none. With
+`sampling.strategy: all`, every repository that passes is analysed (about
+1,600). Every excluded repository is listed with the criterion it failed in
+`results/tables/repository_selection.csv`, and the counts per criterion are in
+`results/reports/repository_selection.md`.
+
+**Changing the criteria needs no manual step.** `./1-mining.sh` notices that
+the results were made with other settings, selects again, and redoes only
+cloning, parsing and the annotation sample (the GitHub search is not repeated
+and no GitHub token is needed). Data of repositories that are no longer
+selected is removed from the database, and the previous annotation sample with
+its labels is moved to `results/validation.before-reselection-<date>` rather
+than deleted.
+
 ### Snapshots on Hugging Face (no need to mine twice)
 
 All results are saved to the Hugging Face dataset set in `config.yaml`

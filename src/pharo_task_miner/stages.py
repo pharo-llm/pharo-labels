@@ -24,7 +24,7 @@ from .analysis.domain_classifier import DomainClassifier, clean_readme, emergent
 from .analysis.operation_rules import RuleClassifier
 from .analysis.structural_features import compute_features
 from .analysis import method_descriptions as md
-from .sampling.repository_filters import eligibility, repository_profiles
+from .sampling.repository_filters import eligibility, repository_profiles, selection_digest
 from .sampling.diversity_sampling import sample as draw_sample, stratum_of
 from .storage.database import Database, dumps, loads
 from .storage.provenance import now_iso, tracked_run, write_json, write_jsonl, read_jsonl
@@ -203,6 +203,10 @@ def sample(cfg, args):
         size = args.size or scfg["sample_size"]
     seed = args.seed if args.seed is not None else scfg["random_seed"]
     with open_db(cfg) as db, tracked_run(db, "sample", cfg, vars(args)) as run:
+        try:
+            previous = set(_selected_repo_ids(db, cfg, None))
+        except StageBlocked:
+            previous = None  # first sample
         profiles = repository_profiles(db, cfg)
         eligible, decisions = [], []
         for p in profiles:
@@ -220,15 +224,51 @@ def sample(cfg, args):
                                               "decision": dec, "reason": reason, "stratum": stratum_of(p, scfg["strata"])},
                       ["run_id", "repo_id"])
         db.commit()
-        out = {"run_id": run.run_id, **info, "selected": [p["full_name"] for p in chosen],
-               "counts": dict(Counter(d for _, d, _ in decisions))}
+        out = {"run_id": run.run_id, **info, "selection_digest": selection_digest(cfg),
+               "selected": [p["full_name"] for p in chosen], "counts": dict(Counter(d for _, d, _ in decisions))}
+        if previous is not None and previous != {p["repo_id"] for p in chosen}:
+            out["reselection"] = _reset_for_new_selection(cfg, db, {p["repo_id"] for p in chosen})
         write_json(cfg.data_dir / "processed" / "sample.json", out)
         write_csv(cfg.output_dir / "tables" / "repository_selection.csv",
                   [{**{k: p.get(k) for k in ("full_name", "pharo_status", "primary_domain", "size_category", "owner",
-                                              "project_kind", "educational", "core_infrastructure", "stars")},
+                                              "project_kind", "educational", "core_infrastructure", "stars", "forks",
+                                              "contributors", "commit_count", "n_pharo_source_files", "has_tests",
+                                              "coursework")},
                     "decision": d, "reason": r} for p, d, r in decisions])
         run.counts.update(out["counts"])
         log(f"Sample ({info['strategy']}, seed {seed}): {len(chosen)} selected of {len(eligible)} eligible; {out['counts']}")
+
+
+def _reset_for_new_selection(cfg, db: Database, selected: set[int]) -> dict:
+    """The set of analysed repositories changed. Everything derived from the old set would
+    silently mix with the new one, so: parsed data of repositories that are no longer selected
+    is removed from the database (their clones stay on disk), labels given to the old annotation
+    sample are removed, and the validation folder is moved aside (never deleted) so that a new
+    annotation sample is drawn from the new corpus."""
+    gone = [r[0] for r in db.query("SELECT DISTINCT repo_id FROM repository_snapshots") if r[0] not in selected]
+    db.execute("CREATE TEMP TABLE IF NOT EXISTS _gone_repos (repo_id INTEGER PRIMARY KEY)")
+    db.execute("DELETE FROM _gone_repos")
+    db.executemany("INSERT INTO _gone_repos VALUES (?)", [(r,) for r in gone])
+    methods = "SELECT method_id FROM methods WHERE repo_id IN (SELECT repo_id FROM _gone_repos)"
+    snaps = "SELECT snapshot_id FROM repository_snapshots WHERE repo_id IN (SELECT repo_id FROM _gone_repos)"
+    for t in ("message_sends", "api_references", "operation_evidence", "method_labels", "method_status", "method_descriptions"):
+        db.execute(f"DELETE FROM {t} WHERE method_id IN ({methods})")
+    for t in ("source_files", "packages", "package_dependencies", "classes", "methods"):
+        db.execute(f"DELETE FROM {t} WHERE snapshot_id IN ({snaps})")
+    db.execute("DELETE FROM repository_snapshots WHERE repo_id IN (SELECT repo_id FROM _gone_repos)")
+    db.execute("DELETE FROM annotation_decisions")
+    db.execute("DELETE FROM method_labels WHERE label_source != 'rule_based'")
+    db.execute("DELETE FROM method_status WHERE label_source != 'rule_based'")
+    db.commit()
+    res = {"repositories_removed_from_corpus": len(gone), "validation_moved_to": None}
+    vdir = cfg.validation_dir
+    if vdir.exists():
+        dest = vdir.with_name(f"{vdir.name}.before-reselection-{now_iso()[:19].replace(':', '').replace('-', '')}")
+        vdir.rename(dest)
+        res["validation_moved_to"] = str(dest)
+    log(f"The selection of repositories changed: parsed data of {len(gone)} repositories that are no longer selected was "
+        f"removed, and the previous annotation sample and its labels were moved to {res['validation_moved_to']}.")
+    return res
 
 
 def _selected_repo_ids(db: Database, cfg, args) -> list[int]:

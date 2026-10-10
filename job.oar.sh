@@ -180,7 +180,7 @@ fi
 free -g 2>/dev/null || true
 df -h "$OLLAMA_MODELS_DIR" "$ROOT_DIR" || true
 
-if command -v nvidia-smi >/dev/null 2>&1; then
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
     log "NVIDIA GPU detected"
     nvidia-smi || true
 else

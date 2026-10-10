@@ -7,6 +7,9 @@
 #   1. results already on this computer        -> they are used as they are
 #   2. otherwise, a snapshot on Hugging Face   -> it is downloaded and used (minutes, not hours)
 #   3. otherwise                               -> mining from GitHub (hours), then uploaded as a snapshot
+# In cases 1 and 2, if the results were made with other selection settings than config.yaml has
+# now (repositories.quality, sampling), the repositories are selected again and only cloning,
+# parsing and the annotation sample are redone: no GitHub search, no GitHub token.
 # The Hugging Face dataset is set in config.yaml (snapshot.repo, default pharo-llm/pharo-labels).
 #
 #   ./1-mining.sh                      as above
@@ -39,13 +42,15 @@ finish_ok() {
   exit 0
 }
 
+push_snapshot() {
+  [ "$PUSH_SNAPSHOT" = "yes" ] || return 0
+  ask_secret HF_TOKEN "Hugging Face token with write access (https://huggingface.co/settings/tokens)"
+  run_logged "$LOG" "$MINER" snapshot push --message "$1" \
+    || echo "Upload to Hugging Face failed (results are safe locally). Retry later with: ./snapshot.sh push"
+}
+
 state=$("$MINER" snapshot state)
 if [ "$USE_SNAPSHOT" = "auto" ]; then
-  if [ "$state" = "complete" ]; then
-    echo "Mining results already exist on this computer (results/): using them, nothing to mine."
-    [ $# -gt 0 ] && echo "Note: options '$*' were ignored. To mine again: USE_SNAPSHOT=\"no\" in this file (or move results/ away)."
-    finish_ok
-  fi
   if [ "$state" = "none" ]; then
     echo "No local results: looking for a snapshot on Hugging Face …"
     rev_args=()
@@ -53,16 +58,35 @@ if [ "$USE_SNAPSHOT" = "auto" ]; then
     if "$MINER" snapshot info ${rev_args[@]+"${rev_args[@]}"} 2>/dev/null | grep -q '"remote_snapshot": true'; then
       if run_logged "$LOG" "$MINER" snapshot pull ${rev_args[@]+"${rev_args[@]}"}; then
         echo
-        echo "Snapshot downloaded and installed: mining skipped."
-        finish_ok
+        echo "Snapshot downloaded and installed: no GitHub search needed."
+        state=$("$MINER" snapshot state)
+      else
+        echo "Downloading the snapshot failed (see above); falling back to mining."
       fi
-      echo "Downloading the snapshot failed (see above); falling back to mining."
     else
       echo "No snapshot found: mining from GitHub."
     fi
-  else
-    echo "An interrupted mining run was found in results/: resuming it."
   fi
+  if [ "$state" = "stale" ]; then
+    echo "The selection settings in config.yaml differ from the ones these results were made with: selecting the repositories again."
+    run_logged "$LOG" "$MINER" sample || { echo "Failed: see $LOG"; exit 1; }
+    state=$("$MINER" snapshot state)
+    [ "$state" = "complete" ] && echo "The same repositories are selected: nothing to redo."
+  fi
+  if [ "$state" = "complete" ]; then
+    echo "Mining results exist on this computer (results/): using them, nothing to mine."
+    [ $# -gt 0 ] && echo "Note: options '$*' were ignored. To mine again: USE_SNAPSHOT=\"no\" in this file (or move results/ away)."
+    finish_ok
+  fi
+  if [ "$state" = "selected" ]; then
+    echo "Cloning and parsing the selected repositories (clones that already exist are reused) …"
+    for stage in clone parse analyze classify-domains discover-operations export-annotations; do
+      run_logged "$LOG" "$MINER" "$stage" || { echo "Failed at '$stage'. Rerun ./1-mining.sh to continue; see $LOG"; exit 1; }
+    done
+    push_snapshot "Mining results (new repository selection)"
+    finish_ok
+  fi
+  [ "$state" = "partial" ] && echo "An interrupted mining run was found in results/: resuming it."
 fi
 
 ask_secret GITHUB_TOKEN "GitHub token (https://github.com/settings/tokens, read-only public access is enough)"
@@ -71,11 +95,7 @@ run_logged "$LOG" "$MINER" pipeline "$@" || status=$?
 echo
 case $status in
   0|3)
-    if [ "$PUSH_SNAPSHOT" = "yes" ]; then
-      ask_secret HF_TOKEN "Hugging Face token with write access (https://huggingface.co/settings/tokens)"
-      run_logged "$LOG" "$MINER" snapshot push --message "Mining results" \
-        || echo "Upload to Hugging Face failed (results are safe locally). Retry later with: ./snapshot.sh push"
-    fi
+    push_snapshot "Mining results"
     finish_ok ;;
   *) echo "Failed (exit $status). Rerun ./1-mining.sh to resume; see $LOG"; exit "$status" ;;
 esac

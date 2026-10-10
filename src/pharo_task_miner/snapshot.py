@@ -81,11 +81,24 @@ class Roots:
 
 
 def local_state(cfg) -> str:
-    """``complete`` (mining finished: database + annotation sample), ``partial`` (a run
-    started but did not reach the sample) or ``none``."""
+    """``complete`` (mining finished: database + annotation sample), ``stale`` (repositories were
+    selected with other settings than the current ``repositories``/``sampling`` configuration),
+    ``selected`` (repositories selected with the current settings, but not yet all cloned, parsed
+    and sampled for annotation), ``partial`` (a run started but did not reach the selection) or
+    ``none``."""
+    from .sampling.repository_filters import selection_digest
     r = Roots.from_cfg(cfg)
     has_db = r.database.exists() and r.database.stat().st_size > 0
     has_sample = (r.validation / "annotation_sample.csv").exists()
+    selection = r.data / "processed" / "sample.json"
+    if has_db and selection.exists():
+        try:
+            digest = json.loads(selection.read_text(encoding="utf-8")).get("selection_digest")
+        except ValueError:
+            digest = None
+        if digest != selection_digest(cfg):
+            return "stale"
+        return "complete" if has_sample else "selected"
     if has_db and has_sample:
         return "complete"
     if has_db or (r.data / "raw" / "repositories.jsonl").exists():
