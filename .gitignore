@@ -7,3 +7,7 @@ __pycache__/
 results/
 .snapshot_download/
 results/.snapshot_staging/
+# cluster runs (job.oar.sh)
+oar-runs/
+pharo-labels.*.out
+pharo-labels.*.err

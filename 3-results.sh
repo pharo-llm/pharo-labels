@@ -11,10 +11,12 @@
 # ============================== SETTINGS ===================================================
 # Benchmark task files to compare with the taxonomy (see benchmarks/README.md), separated by
 # spaces, e.g. BENCHMARKS="benchmarks/humaneval_pharo.json". Empty = skip that step.
-BENCHMARKS=""
+BENCHMARKS="${BENCHMARKS:-}"
 
 # yes = upload all results (taxonomy, statistics, reports) to Hugging Face at the end
-PUSH_SNAPSHOT="yes"
+PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-yes}"
+# Each setting keeps the value above unless a variable of the same name is already set in the
+# environment (this is how job.oar.sh configures a cluster run).
 # ===========================================================================================
 
 source "$(dirname "$0")/scripts/_common.sh"

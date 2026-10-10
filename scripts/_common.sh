@@ -11,6 +11,12 @@ if [ -f .env ]; then . ./.env; fi
 ask_secret() {
   local var="$1" what="$2" val
   if [ -n "${!var:-}" ]; then export "$var"; return 0; fi
+  # Batch jobs (job.oar.sh) have no terminal to ask on: the secret must already be in .env.
+  if ! { : < /dev/tty; } 2>/dev/null; then
+    echo "$var is required ($what) but there is no terminal to ask on."
+    echo "Add this line to $ROOT/.env and rerun:   export $var=..."
+    exit 1
+  fi
   read -rsp "$what — $var (input hidden): " val < /dev/tty; echo
   [ -n "$val" ] || { echo "$var is required."; exit 1; }
   umask 077

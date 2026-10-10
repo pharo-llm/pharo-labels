@@ -99,6 +99,33 @@ models:
     concurrency: 8                           # vLLM handles many requests at once
     notes: vLLM (fastest for big open-weight models). Any Hugging Face model works.
 
+  # --- big models on a CPU-only cluster node (job.oar.sh) --------------------------------
+  # Used by job.oar.sh, which installs and starts Ollama on the node itself (no GPU needed,
+  # but the node needs the RAM: the three together are ~80 GB on disk). Three different
+  # families, so their agreement means something. CPU inference is slow: a long timeout, and
+  # 4 requests at once (job.oar.sh starts Ollama with OLLAMA_NUM_PARALLEL=4 to match).
+  cluster-qwen-coder-32b:
+    provider: ollama
+    model: qwen2.5-coder:32b
+    size: 20 GB
+    timeout_seconds: 3600
+    concurrency: 4
+    notes: Alibaba; the strongest Qwen2.5 code model.
+  cluster-llama-3.3-70b:
+    provider: ollama
+    model: llama3.3:70b
+    size: 43 GB
+    timeout_seconds: 3600
+    concurrency: 4
+    notes: Meta; the strongest general model that is still practical on CPU. The slowest of the three.
+  cluster-gemma3-27b:
+    provider: ollama
+    model: gemma3:27b
+    size: 17 GB
+    timeout_seconds: 3600
+    concurrency: 4
+    notes: Google; good instruction following.
+
   # --- hosted APIs (used by the LLM annotation step, ./2-ai-labelling.sh) ------------------
   # The API key is read from the environment variable in `api_key_env`; 2-ai-labelling.sh asks
   # for it once and stores it in .env (git-ignored). Prices and model ids change: check the

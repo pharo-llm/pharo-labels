@@ -17,15 +17,17 @@
 # ============================== SETTINGS ===================================================
 # auto = use local results, else the Hugging Face snapshot, else mine
 # no   = always mine (resumes an interrupted mining run; never downloads a snapshot)
-USE_SNAPSHOT="auto"
+USE_SNAPSHOT="${USE_SNAPSHOT:-auto}"
 
 # Snapshot version to download: "" = latest; or a tag such as snapshot-20261009-153000
 # (all versions: ./snapshot.sh info)
-SNAPSHOT_VERSION=""
+SNAPSHOT_VERSION="${SNAPSHOT_VERSION:-}"
 
 # yes = after mining, upload the results to Hugging Face so the next run (or a colleague) can
 #       skip mining. Needs a Hugging Face token with write access (asked once, kept in .env).
-PUSH_SNAPSHOT="yes"
+PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-yes}"
+# Each setting keeps the value above unless a variable of the same name is already set in the
+# environment (this is how job.oar.sh configures a cluster run).
 # ===========================================================================================
 
 source "$(dirname "$0")/scripts/_common.sh"

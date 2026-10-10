@@ -149,6 +149,24 @@ Recommendations:
 - Fill the spot-check (30 methods is about an hour) and report its numbers next
   to the AI labels.
 
+## All three steps as one cluster job (OAR)
+
+`job.oar.sh` runs steps 1, 2 and 3 on one cluster node that has no GPU and no
+Ollama: it installs Ollama on the node's local disk (no sudo), starts it, pulls
+the models, labels all 300 methods and builds the reports.
+
+```bash
+echo 'export HF_TOKEN=...' >> .env    # optional: upload the results (a batch job cannot ask for it)
+oarsub -S ./job.oar.sh
+LIMIT=10 bash job.oar.sh              # a short trial, directly on a reserved node
+```
+
+The annotators are the `cluster-…` entries of `models.yaml`: `qwen2.5-coder:32b`,
+`llama3.3:70b` and `gemma3:27b`, three families combined by majority vote. They
+need about 80 GB of disk and run on CPU, so the job takes hours; if the walltime
+runs out, submit it again and it continues from the cached answers. Settings are
+at the top of the file and can be overridden by variables of the same name.
+
 ## Optional: local LLM
 
 The pipeline is rule-based by default. Adding `--semantic` makes a **local
@@ -178,6 +196,7 @@ they use a taxonomy id **and** cite evidence found in the method.
 | `pharo/ASTExporter/` | Optional parser backend that uses Pharo's own `RBParser` (untested here) |
 | `benchmarks/` | Format for importing existing benchmark tasks |
 | `1-mining.sh`, `2-ai-labelling.sh`, `3-results.sh` | The three steps (settings at the top of each file) |
+| `job.oar.sh` | The three steps as one OAR cluster job (installs and runs Ollama on the node) |
 | `snapshot.sh` | Save/restore all results on Hugging Face |
 | `models.yaml` | Models: local (Ollama, llama.cpp, LM Studio) and APIs (Claude, OpenAI, OpenRouter) |
 | `results/` | Everything a run produces (git-ignored) |

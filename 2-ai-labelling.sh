@@ -14,33 +14,35 @@
 #   MODELS="claude-opus-5-5 openrouter-qwen-coder-32b openrouter-llama-3.3-70b"
 # Bigger models on your own GPU server: entries starting with "server-" in models.yaml
 # (put the server's address there once). List all models with:  .venv/bin/pharo-miner models
-MODELS="qwen2.5-coder-7b"
+MODELS="${MODELS:-qwen2.5-coder-7b}"
 
 # Optional model that settles disagreements between the annotators. Leave empty to use a
 # vote instead (CONSENSUS). Best practice: a strong model that is NOT in MODELS.
-ADJUDICATOR=""
+ADJUDICATOR="${ADJUDICATOR:-}"
 
 # How labels are combined when there is no adjudicator:
 #   majority  = keep a category when more than half of the models chose it
 #   unanimous = keep a category only when every model chose it
-CONSENSUS="majority"
+CONSENSUS="${CONSENSUS:-majority}"
 
 # enforce = drop a label if the model cannot quote code from the method that shows it
 #           (protects against invented labels; recommended)
 # record  = keep every label
-EVIDENCE_POLICY="enforce"
+EVIDENCE_POLICY="${EVIDENCE_POLICY:-enforce}"
 
 # 0 = label all 300 methods. Use e.g. 10 for a quick, cheap trial of a model first.
-LIMIT=5
+LIMIT="${LIMIT:-50}"
 
 # Parallel requests per model. Empty = automatic (1 for local models, 4 for APIs).
-CONCURRENCY=""
+CONCURRENCY="${CONCURRENCY:-}"
 
 # Methods exported for a blind human check of the AI labels (0 = none).
-SPOTCHECK_SIZE=30
+SPOTCHECK_SIZE="${SPOTCHECK_SIZE:-30}"
 
 # yes = when labelling succeeds, upload all results (including every AI answer) to Hugging Face
-PUSH_SNAPSHOT="yes"
+PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-yes}"
+# Each setting keeps the value above unless a variable of the same name is already set in the
+# environment (this is how job.oar.sh configures a cluster run).
 # ===========================================================================================
 
 source "$(dirname "$0")/scripts/_common.sh"
