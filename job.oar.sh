@@ -7,13 +7,15 @@
 #OAR -O pharo-labels.%jobid%.out
 #OAR -E pharo-labels.%jobid%.err
 
-# The whole workflow in one cluster job, on one CPU-only node (chirop: 2 x Xeon Platinum 8358,
-# 64 cores, 512 GiB RAM, no GPU):
+# The whole workflow in one cluster job, from an empty results/ folder, on one CPU-only node
+# (chirop: 2 x Xeon Platinum 8358, 64 cores, 512 GiB RAM, no GPU):
 #   1. ./1-mining.sh        results from the Hugging Face snapshot, or mined from GitHub
 #      ./1-2-filtering.sh   keeps the repositories worth labelling (150 at most)
 #   2. ./2-ai-labelling.sh  three big open-weight models label the sample, on an Ollama server
 #                           that this job installs and starts on the node (no sudo)
 #   3. ./3-results.sh       taxonomy, statistics, reports
+#   4. ./4-benchmark.sh     one model writes benchmark tasks, a Pharo image validates them,
+#                           another model solves them (RUN_BENCHMARK=no skips this step)
 #
 #   oarsub -S ./job.oar.sh          submit (from the repository folder)
 #   bash job.oar.sh                 or run it directly on a reserved node
@@ -23,7 +25,7 @@
 #   export GITHUB_TOKEN=...         only needed if step 1 really has to mine GitHub
 #
 # Safe to resubmit: results/ is kept, model answers are cached, and every step resumes. If the
-# walltime runs out during step 2, submit again and it continues where it stopped.
+# walltime runs out during step 2 or step 4, submit again and it continues where it stopped.
 
 source "$(dirname "${BASH_SOURCE[0]}")/scripts/_common.sh"   # set -euo pipefail, cd to the repository, .env, .venv
 ROOT_DIR="$ROOT"
@@ -60,6 +62,24 @@ OLLAMA_PARALLEL="${OLLAMA_PARALLEL:-4}"
 
 # Step 3: benchmark task files to compare with the taxonomy ("" = skip).
 export BENCHMARKS="${BENCHMARKS:-}"
+
+# Step 4: benchmark generation. yes | no
+RUN_BENCHMARK="${RUN_BENCHMARK:-yes}"
+# The model that writes the tasks, and the models that must solve each task from its statement
+# alone. Two different families, so the second check is independent; both are already
+# downloaded for step 2. An API model (models.yaml) also works when its key is in .env.
+export AUTHOR="${AUTHOR:-cluster-qwen-coder-32b}"
+export SOLVERS="${SOLVERS:-cluster-gemma3-27b}"
+export OPERATIONS="${OPERATIONS:-auto}"
+export TASKS_PER_OPERATION="${TASKS_PER_OPERATION:-3}"
+# 0 = all seed methods. For a first trial of the job: BENCHMARK_LIMIT=5
+BENCHMARK_LIMIT="${BENCHMARK_LIMIT:-0}"
+# Tasks processed at the same time (each one runs its own copy of the Pharo image).
+BENCHMARK_CONCURRENCY="${BENCHMARK_CONCURRENCY:-2}"
+
+# Models Ollama keeps in memory together. Step 4 alternates between the author and the solver
+# for every task; with 1, each switch would reload a 20 GB model from disk.
+OLLAMA_MAX_LOADED="${OLLAMA_MAX_LOADED:-3}"
 
 # Upload results to Hugging Face after each step: auto = only when HF_TOKEN is in .env.
 PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-auto}"
@@ -161,6 +181,17 @@ log "Ollama install directory: $OLLAMA_INSTALL_DIR"
 log "Ollama models directory: $OLLAMA_MODELS_DIR"
 log "Models: $MODELS${ADJUDICATOR:+; adjudicator: $ADJUDICATOR}"
 log "Methods to label: $([ "$LIMIT" = "0" ] && echo all || echo "first $LIMIT")"
+if [ "$RUN_BENCHMARK" = "yes" ]; then
+    log "Benchmark: author $AUTHOR; solvers $SOLVERS; $TASKS_PER_OPERATION tasks per operation; seeds: $([ "$BENCHMARK_LIMIT" = "0" ] && echo all || echo "first $BENCHMARK_LIMIT")"
+    # Fail now, not after a day of labelling
+    for tool in curl unzip; do
+        command -v "$tool" >/dev/null || { log "ERROR: $tool is required by step 4 (it downloads the Pharo image). Install it or submit with RUN_BENCHMARK=no"; exit 1; }
+    done
+    "$MINER" benchmark-generate --print-requirements --author "$AUTHOR" --solvers "$SOLVERS" >/dev/null \
+        || { log "ERROR: AUTHOR/SOLVERS are not usable (see above)"; exit 1; }
+else
+    log "Benchmark: skipped (RUN_BENCHMARK=$RUN_BENCHMARK)"
+fi
 log "Upload to Hugging Face: $PUSH_SNAPSHOT"
 
 
@@ -289,8 +320,9 @@ export OLLAMA_MODELS="$OLLAMA_MODELS_DIR"
 # The step scripts and models.yaml expect the default address.
 export OLLAMA_HOST="127.0.0.1:11434"
 export OLLAMA_NUM_PARALLEL="$OLLAMA_PARALLEL"
-# The annotators run one after the other: keep one model in memory, and keep it loaded.
-export OLLAMA_MAX_LOADED_MODELS=1
+# Loaded models stay loaded: the annotators run one after the other, and step 4 alternates
+# between its author and its solvers.
+export OLLAMA_MAX_LOADED_MODELS="$OLLAMA_MAX_LOADED"
 export OLLAMA_KEEP_ALIVE="24h"
 # A 43 GB model can take minutes to load.
 export OLLAMA_LOAD_TIMEOUT="30m"
@@ -348,7 +380,7 @@ log "3-START OLLAMA OK"
 
 
 ###############################################################################
-# 4. Pull the annotation models
+# 4. Pull the models (annotators of step 2, author and solvers of step 4)
 ###############################################################################
 
 log "============================================================"
@@ -361,6 +393,12 @@ requirements="$("$MINER" llm-annotate --print-requirements --models "$MODELS" --
 while read -r kind value; do
     if [ "$kind" = "ollama" ]; then OLLAMA_MODELS_TO_PULL+=("$value"); fi
 done <<< "$requirements"
+if [ "$RUN_BENCHMARK" = "yes" ]; then
+    requirements="$("$MINER" benchmark-generate --print-requirements --author "$AUTHOR" --solvers "$SOLVERS")"
+    while read -r kind value; do
+        if [ "$kind" = "ollama" ] && [[ " ${OLLAMA_MODELS_TO_PULL[*]-} " != *" $value "* ]]; then OLLAMA_MODELS_TO_PULL+=("$value"); fi
+    done <<< "$requirements"
+fi
 
 if [ "${#OLLAMA_MODELS_TO_PULL[@]}" -eq 0 ]; then
     log "None of the chosen models runs on this node's Ollama: nothing to pull"
@@ -415,11 +453,45 @@ run_step "5-AI LABELLING" "$ROOT_DIR/2-ai-labelling.sh"
 
 
 ###############################################################################
-# 6. Stop Ollama (step 3 needs no model; this frees the memory)
+# 6. Results (needs no model; Ollama stays up for step 4)
 ###############################################################################
 
 log "============================================================"
-log "6. STOPPING OLLAMA"
+log "6. RESULTS"
+log "============================================================"
+
+run_step "6-RESULTS" "$ROOT_DIR/3-results.sh"
+
+
+###############################################################################
+# 7. Benchmark generation
+###############################################################################
+
+if [ "$RUN_BENCHMARK" = "yes" ]; then
+
+    log "============================================================"
+    log "7. BENCHMARK GENERATION"
+    log "============================================================"
+
+    if ! curl -fsS "http://$OLLAMA_HOST/api/tags" >/dev/null; then
+        log "ERROR: Ollama API is no longer responding"
+        show_ollama_log
+        exit 1
+    fi
+
+    # The first run downloads Pharo and builds the validation image (results/benchmark/pharo).
+    # Progress is printed per task (also in results/benchmark.log).
+    LIMIT="$BENCHMARK_LIMIT" CONCURRENCY="$BENCHMARK_CONCURRENCY" run_step "7-BENCHMARK" "$ROOT_DIR/4-benchmark.sh"
+
+fi
+
+
+###############################################################################
+# 8. Stop Ollama
+###############################################################################
+
+log "============================================================"
+log "8. STOPPING OLLAMA"
 log "============================================================"
 
 "$OLLAMA_BIN" ps || true
@@ -431,29 +503,18 @@ kill "$OLLAMA_PID" 2>/dev/null || true
 wait "$OLLAMA_PID" 2>/dev/null || true
 OLLAMA_PID=""
 
-log "6-STOP OLLAMA OK"
+log "8-STOP OLLAMA OK"
 
 
 ###############################################################################
-# 7. Results
+# 9. Show results
 ###############################################################################
 
 log "============================================================"
-log "7. RESULTS"
+log "9. GENERATED FILES"
 log "============================================================"
 
-run_step "7-RESULTS" "$ROOT_DIR/3-results.sh"
-
-
-###############################################################################
-# 8. Show results
-###############################################################################
-
-log "============================================================"
-log "8. GENERATED FILES"
-log "============================================================"
-
-for dir in validation/llm reports tables figures; do
+for dir in validation/llm reports tables figures benchmark; do
     find "$RESULTS_DIR/$dir" -maxdepth 1 -type f -print 2>/dev/null || true
 done
 
@@ -469,5 +530,8 @@ log "============================================================"
 log "Job ID: ${OAR_JOB_ID:-manual}"
 log "Results: $RESULTS_DIR (start with reports/ecosystem_summary.md)"
 log "AI labels: $RESULTS_DIR/validation/llm (agreement between the models: run_manifest.json)"
+if [ "$RUN_BENCHMARK" = "yes" ]; then
+    log "Benchmark: $RESULTS_DIR/benchmark (tasks.jsonl; report: reports/benchmark_generation.md)"
+fi
 log "Ollama log: $OLLAMA_LOG"
 log "Ollama models: $OLLAMA_MODELS_DIR"

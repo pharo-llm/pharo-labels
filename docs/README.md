@@ -10,7 +10,7 @@ what it does, its settings, what it writes, and what can go wrong.
 | [2-ai-labelling.md](2-ai-labelling.md) | `./2-ai-labelling.sh` | Language models label a sample of 300 methods of the study corpus, to check the rule labels of step 1 |
 | [3-results.md](3-results.md) | `./3-results.sh` | Builds the taxonomy, the statistics, the figures and the reports |
 | [4-benchmark.md](4-benchmark.md) | `./4-benchmark.sh` | Writes benchmark tasks for the operations found, and keeps only those a Pharo image proves correct |
-| [cluster-job.md](cluster-job.md) | `job.oar.sh` | Runs steps 1, 2 and 3 as one job on a Grid'5000 node |
+| [cluster-job.md](cluster-job.md) | `job.oar.sh` | Runs all steps as one job on a Grid'5000 node |
 | [snapshots.md](snapshots.md) | `./snapshot.sh` | Saves all results on Hugging Face and gets them back |
 
 ## How the steps fit together

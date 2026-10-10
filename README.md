@@ -36,7 +36,7 @@ Everything is explained in **[docs/](docs/README.md)**, one page per script:
 | [docs/2-ai-labelling.md](docs/2-ai-labelling.md) | `2-ai-labelling.sh`: the models, how their labels are combined and checked |
 | [docs/3-results.md](docs/3-results.md) | `3-results.sh`: taxonomy, statistics, figures, reports |
 | [docs/4-benchmark.md](docs/4-benchmark.md) | `4-benchmark.sh`: task generation, the ten checks, the papers behind them |
-| [docs/cluster-job.md](docs/cluster-job.md) | `job.oar.sh`: steps 1 to 3 as one Grid'5000 job |
+| [docs/cluster-job.md](docs/cluster-job.md) | `job.oar.sh`: all steps as one Grid'5000 job |
 | [docs/snapshots.md](docs/snapshots.md) | `snapshot.sh`: saving and restoring results on Hugging Face |
 
 ## Where the results are
@@ -65,7 +65,7 @@ Individual stages: `.venv/bin/pharo-miner --help`.
 | `benchmarks/` | Format for importing existing benchmark tasks |
 | `docs/` | The documentation, one page per script |
 | `1-mining.sh`, `1-2-filtering.sh`, `2-ai-labelling.sh`, `3-results.sh` | Steps 1 to 3 (settings at the top of each file) |
-| `job.oar.sh` | Steps 1 to 3 as one OAR cluster job (installs and runs Ollama on the node) |
+| `job.oar.sh` | All steps as one OAR cluster job (installs and runs Ollama on the node) |
 | `4-benchmark.sh` | Step 4: generate and validate benchmark tasks (see `docs/4-benchmark.md`) |
 | `pharo/BenchmarkHarness/` | The scripts that validate a task inside the Pharo image |
 | `snapshot.sh` | Save/restore all results on Hugging Face |
