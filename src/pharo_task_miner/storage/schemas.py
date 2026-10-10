@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS selection_decisions (
     PRIMARY KEY (run_id, repo_id)
 );
 
+CREATE TABLE IF NOT EXISTS corpus_decisions (
+    run_id TEXT, repo_id INTEGER, decision TEXT, reason TEXT, failed_json TEXT, metrics_json TEXT,
+    PRIMARY KEY (run_id, repo_id)
+);
+
 CREATE TABLE IF NOT EXISTS repository_snapshots (
     snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
     repo_id INTEGER NOT NULL,
@@ -134,6 +139,7 @@ CREATE TABLE IF NOT EXISTS methods (
     features_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_methods_repo ON methods(repo_id);
+CREATE INDEX IF NOT EXISTS idx_methods_snapshot ON methods(snapshot_id);
 CREATE INDEX IF NOT EXISTS idx_methods_hash ON methods(source_hash);
 
 CREATE TABLE IF NOT EXISTS message_sends (

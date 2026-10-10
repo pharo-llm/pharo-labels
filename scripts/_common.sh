@@ -18,6 +18,8 @@ ask_secret() {
     exit 1
   fi
   read -rsp "$what — $var (input hidden): " val < /dev/tty; echo
+  # Hidden input also captures stray key presses (arrow keys, bracketed paste): drop escape sequences and control characters.
+  val=$(printf '%s' "$val" | LC_ALL=C sed $'s/\x1b\\[[0-9;?]*[A-Za-z~]//g' | LC_ALL=C tr -d '[:cntrl:][:space:]')
   [ -n "$val" ] || { echo "$var is required."; exit 1; }
   umask 077
   printf 'export %s=%q\n' "$var" "$val" >> .env

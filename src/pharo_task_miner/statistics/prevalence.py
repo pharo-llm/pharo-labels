@@ -1,7 +1,8 @@
 """Module 12 — repository-level, method-level and repository-balanced prevalence.
 
 Variants (sensitivity analysis):
-* ``all``          every parsed method of the latest snapshot of each analysed repository
+* ``all``          every parsed method of the latest snapshot of each repository of the study
+                   corpus (``filter-corpus``; every analysed repository when it was never run)
 * ``deduplicated`` excludes methods whose source is duplicated from a canonical repository
 * ``non_test``     excludes test classes/packages
 
@@ -17,14 +18,19 @@ import numpy as np
 
 from .uncertainty import wilson
 from ..analysis.structural_features import LANGUAGE_FEATURES
+from ..sampling.corpus_filter import study_repo_ids
 from ..storage.database import Database, loads
 
 
 class Corpus:
     def __init__(self, db: Database, variant: str = "all", label_source: str = "rule_based", repo_ids: set[int] | None = None):
         self.variant = variant
+        if repo_ids is None:
+            repo_ids = study_repo_ids(db)  # None = the corpus was never filtered: every analysed repository
         latest = {r[0] for r in db.query("SELECT MAX(snapshot_id) FROM repository_snapshots GROUP BY repo_id")}
         sql = "SELECT method_id, repo_id, snapshot_id, is_test, duplicate_of_method_id, features_json FROM methods WHERE parse_status='ok'"
+        if repo_ids is not None:
+            sql += " AND repo_id IN (%s)" % (",".join(map(str, sorted(repo_ids))) or "NULL")
         self.method_repo: dict[int, int] = {}
         self.features: dict[int, dict] = {}
         for r in db.query(sql):

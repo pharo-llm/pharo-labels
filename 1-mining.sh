@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # STEP 1 — Mining: find Pharo repositories on GitHub, verify them, collect metadata, sample,
-# clone, parse every method, classify operations with rules, and export the 300-method
-# annotation sample.
+# clone, parse every method and classify operations with rules. Which of these repositories
+# are labelled and benchmarked is decided next, by ./1-2-filtering.sh.
 #
 # It does NOT mine again when it does not have to:
 #   1. results already on this computer        -> they are used as they are
@@ -15,7 +15,7 @@
 #   ./1-mining.sh                      as above
 #   ./1-mining.sh --size 300           mining options (applied only when mining actually runs)
 #
-# Output: results/  (log: results/run.log). Next: ./2-ai-labelling.sh
+# Output: results/  (log: results/run.log). Next: ./1-2-filtering.sh
 
 # ============================== SETTINGS ===================================================
 # auto = use local results, else the Hugging Face snapshot, else mine
@@ -37,8 +37,7 @@ source "$(dirname "$0")/scripts/_common.sh"
 LOG=results/run.log
 
 finish_ok() {
-  echo "The 300-method sample is in results/validation/annotation_sample.csv."
-  echo "Next: ./2-ai-labelling.sh   (or have people fill results/validation/reviewer_decisions.csv)"
+  echo "Next: ./1-2-filtering.sh   (keeps the repositories worth labelling and benchmarking, 150 at most)"
   exit 0
 }
 

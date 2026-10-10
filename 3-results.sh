@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # STEP 3 — Results: human spot-check agreement (if filled), taxonomy, statistics, benchmark
-# coverage (if benchmark files are given) and the Markdown reports with figures.
+# coverage (if benchmark files are given) and the Markdown reports with figures. All of them
+# describe the study corpus: the repositories kept by ./1-2-filtering.sh.
 #
 #   ./3-results.sh
 # Output: results/reports/, results/tables/, results/figures/   (log: results/results.log)
@@ -21,6 +22,9 @@ PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-yes}"
 
 source "$(dirname "$0")/scripts/_common.sh"
 LOG=results/results.log
+if [ ! -s results/data/processed/corpus.json ]; then
+  echo "The study corpus is not filtered yet: run ./1-2-filtering.sh first."; exit 1
+fi
 echo "== Results $(date '+%Y-%m-%d %H:%M')" >> "$LOG"
 
 if [ -s results/validation/llm/human_spotcheck.csv ]; then

@@ -24,6 +24,7 @@ from .analysis.domain_classifier import DomainClassifier, clean_readme, emergent
 from .analysis.operation_rules import RuleClassifier
 from .analysis.structural_features import compute_features
 from .analysis import method_descriptions as md
+from .sampling.corpus_filter import study_repo_ids
 from .sampling.repository_filters import eligibility, repository_profiles, selection_digest
 from .sampling.diversity_sampling import sample as draw_sample, stratum_of
 from .storage.database import Database, dumps, loads
@@ -256,19 +257,78 @@ def _reset_for_new_selection(cfg, db: Database, selected: set[int]) -> dict:
     for t in ("source_files", "packages", "package_dependencies", "classes", "methods"):
         db.execute(f"DELETE FROM {t} WHERE snapshot_id IN ({snaps})")
     db.execute("DELETE FROM repository_snapshots WHERE repo_id IN (SELECT repo_id FROM _gone_repos)")
+    res = {"repositories_removed_from_corpus": len(gone), "validation_moved_to": _reset_validation(cfg, db, "reselection")}
+    log(f"The selection of repositories changed: parsed data of {len(gone)} repositories that are no longer selected was "
+        f"removed, and the previous annotation sample and its labels were moved to {res['validation_moved_to']}.")
+    return res
+
+
+def _reset_validation(cfg, db: Database, why: str) -> str | None:
+    """Labels given to the previous annotation sample are removed from the database and the
+    validation folder is moved aside (never deleted), so that a new sample is drawn."""
     db.execute("DELETE FROM annotation_decisions")
     db.execute("DELETE FROM method_labels WHERE label_source != 'rule_based'")
     db.execute("DELETE FROM method_status WHERE label_source != 'rule_based'")
     db.commit()
-    res = {"repositories_removed_from_corpus": len(gone), "validation_moved_to": None}
     vdir = cfg.validation_dir
-    if vdir.exists():
-        dest = vdir.with_name(f"{vdir.name}.before-reselection-{now_iso()[:19].replace(':', '').replace('-', '')}")
-        vdir.rename(dest)
-        res["validation_moved_to"] = str(dest)
-    log(f"The selection of repositories changed: parsed data of {len(gone)} repositories that are no longer selected was "
-        f"removed, and the previous annotation sample and its labels were moved to {res['validation_moved_to']}.")
-    return res
+    if not vdir.exists():
+        return None
+    dest = vdir.with_name(f"{vdir.name}.before-{why}-{now_iso()[:19].replace(':', '').replace('-', '')}")
+    vdir.rename(dest)
+    return str(dest)
+
+
+# --------------------------------------------------------------------------- study corpus
+def filter_corpus(cfg, args):
+    """Keep the repositories that steps 2, 3 and 4 are based on (docs/1-2-filtering.md)."""
+    from .sampling import corpus_filter as cf
+    if getattr(args, "max_repositories", None) is not None:
+        cfg["corpus_filter"]["max_repositories"] = args.max_repositories
+    fcfg = cfg["corpus_filter"]
+    with open_db(cfg) as db, tracked_run(db, cf.STAGE, cfg, vars(args)) as run:
+        if not db.scalar("SELECT COUNT(*) FROM repository_snapshots WHERE n_methods > 0"):
+            raise StageBlocked("No mined repositories yet: run ./1-mining.sh first.")
+        previous = cf.study_repo_ids(db)
+        log("Measuring the mined repositories (about a minute on the full database) …")
+        metrics, mined = cf.repository_metrics(db, cfg)
+        decisions, funnel, info = cf.select(metrics, fcfg)
+        log(f"Mined repositories: {info['mined']}")
+        for i, r in enumerate(funnel, 1):
+            log(f"  {i:>2}. {r['requirement']:<62} -{r['removed']:<5} -> {r['remaining']}")
+        chosen = {d["repo_id"] for d in decisions if d["decision"] == "included"}
+        if not chosen:
+            raise StageBlocked("No repository passes every criterion: relax corpus_filter in config.yaml "
+                               "(results/tables/corpus_filter.csv is not written; nothing was changed).")
+        for d in decisions:
+            db.upsert("corpus_decisions", {"run_id": run.run_id, "repo_id": d["repo_id"], "decision": d["decision"],
+                                           "reason": d["reason"], "failed_json": dumps(d["failed"]),
+                                           "metrics_json": dumps({k: v for k, v in d.items()
+                                                                  if k not in ("decision", "reason", "failed")})},
+                      ["run_id", "repo_id"])
+        db.commit()
+        out = {"run_id": run.run_id, "filter_digest": cf.filter_digest(cfg), "criteria": dict(fcfg), "mining_date": mined,
+               **info, "funnel": funnel,
+               "selected": sorted(d["full_name"] for d in decisions if d["decision"] == "included")}
+        labelled = bool(db.scalar("SELECT COUNT(*) FROM method_labels WHERE label_source != 'rule_based'"))
+        if previous != chosen and (previous is not None or labelled or (cfg.validation_dir / "annotation_sample.csv").exists()):
+            # the annotation sample and its labels describe another set of repositories
+            out["validation_moved_to"] = _reset_validation(cfg, db, "filtering")
+            log(f"The study corpus changed: the previous annotation sample and its labels were moved to "
+                f"{out['validation_moved_to']}. Steps 2, 3 and 4 must be run again.")
+        elif previous == chosen:
+            log("The study corpus is the same as before: the annotation sample and its labels are kept.")
+        write_json(cfg.data_dir / "processed" / "corpus.json", out)
+        cols = ["full_name", "decision", "reason", "failed", "primary_domain", "license", "stars", "forks", "contributors",
+                "commit_count", "created_at", "pushed_at", "development_days", "years_since_last_push", "baselines",
+                "tonel_files", "classes", "methods", "non_test_methods", "test_methods", "test_method_share",
+                "duplicated_method_share", "parse_failure_share", "size_category", "project_kind"]
+        write_csv(cfg.output_dir / "tables" / "corpus_filter.csv",
+                  [{**d, "failed": ";".join(d["failed"])} for d in sorted(decisions, key=lambda d: d["full_name"].lower())], cols)
+        cf.write_report(cfg.output_dir / "reports" / "corpus_filter.md", cfg, funnel, decisions, info, mined)
+        run.counts.update({k: v for k, v in info.items()})
+        log(f"Study corpus: {info['selected']} repositories"
+            + (f" (chosen for diversity among {info['passing']} that pass)" if info["capped"] else "")
+            + f". Report: {cfg.output_dir / 'reports' / 'corpus_filter.md'}")
 
 
 def _selected_repo_ids(db: Database, cfg, args) -> list[int]:
@@ -596,7 +656,7 @@ def export_annotations(cfg, args):
                                               " WHERE taxonomy_version=(SELECT MAX(taxonomy_version) FROM taxonomy_categories)")]
         res = export(db, cfg.validation_dir, args.size or vcfg["annotation_sample_size"], vcfg["random_seed"],
                      vcfg["max_per_repository"], vcfg["annotators"], float(vcfg["overlap_fraction"]),
-                     cfg.resolve("taxonomy/annotation_guidelines.md"), tax_rows)
+                     cfg.resolve("taxonomy/annotation_guidelines.md"), tax_rows, repo_ids=study_repo_ids(db))
         run.counts.update({k: v for k, v in res.items() if k != "strata"})
         log(json.dumps(res, indent=1))
 
@@ -722,6 +782,75 @@ def llm_annotate(cfg, args):
         log(json.dumps(res, indent=1))
 
 
+def _benchmark_profiles(cfg, args) -> tuple[list[dict], int]:
+    """Profiles of the author (first) and the solvers, and how many solvers there are."""
+    bcfg = cfg["benchmark_generation"]
+    author = (_split_names(getattr(args, "author", None)) or _split_names(bcfg.get("author")) or [None])[0]
+    solvers = _split_names(getattr(args, "solvers", None)) or _split_names(bcfg.get("solvers"))
+    if solvers and solvers[0].lower() in ("none", "no", "off"):
+        solvers, bcfg["require_independent_solution"] = [], False
+    if not author:
+        raise StageBlocked("No author model: set AUTHOR in 4-benchmark.sh (or benchmark_generation.author in config.yaml).")
+    if bcfg.get("require_independent_solution", True) and not solvers:
+        raise StageBlocked("No solver model: set SOLVERS in 4-benchmark.sh. The solver checks that a task can be solved "
+                           "from its statement alone; use a model other than the author. SOLVERS=none skips that check.")
+    return [{**p, "max_tokens": max(int(p.get("max_tokens") or 0), int(bcfg["max_tokens"]))}
+            for p in _llm_profiles(cfg, [author] + solvers)], len(solvers)
+
+
+def benchmark_generate(cfg, args):
+    """Synthesise benchmark tasks from mined operations and validate each one in a Pharo image."""
+    from .benchgen.image import ImageError
+    from .benchgen.pipeline import run_generation
+    from .validation.llm_providers import ProviderConfigError, requirements
+    for k in ("tasks_per_operation", "max_tasks", "operations", "concurrency"):
+        if getattr(args, k, None) is not None:
+            cfg["benchmark_generation"][k] = getattr(args, k)
+    from .validation.llm_providers import make_provider
+    profiles, _ = _benchmark_profiles(cfg, args)
+    if getattr(args, "print_requirements", False):
+        for kind, what in sorted({r for p in profiles for r in requirements(p)}):
+            print(f"{kind}\t{what}")
+        return
+    try:
+        author, *solvers = [make_provider(p) for p in profiles]
+    except ProviderConfigError as e:
+        raise StageBlocked(str(e)) from e
+    if author.name in [s.name for s in solvers]:
+        log(f"WARNING: {author.name} is both author and solver: the solvability check is then not independent.")
+    tax = load_taxonomy(cfg.resolve(cfg["classification"]["operations"]["taxonomy"]))
+    with open_db(cfg) as db, tracked_run(db, "benchmark-generate", cfg, vars(args)) as run:
+        try:
+            m = run_generation(cfg, db, tax, author, solvers, log, limit=int(getattr(args, "limit", 0) or 0))
+        except (ImageError, ProviderConfigError, ValueError) as e:
+            raise StageBlocked(str(e)) from e
+        run.counts.update({"candidates": m["candidates"], "accepted": m["accepted"], "rejected": m["rejected"]})
+    log(f"Benchmark: {cfg.resolve(cfg['benchmark_generation']['dir'])}  report: results/reports/benchmark_generation.md")
+
+
+def benchmark_validate(cfg, args):
+    """Re-validate stored benchmark tasks in the Pharo image; no model is called."""
+    from .benchgen.image import ImageError
+    from .benchgen.pipeline import run_validation
+    bcfg = cfg["benchmark_generation"]
+    if getattr(args, "concurrency", None) is not None:
+        bcfg["concurrency"] = args.concurrency
+    path = Path(args.input) if getattr(args, "input", None) else cfg.resolve(bcfg["dir"]) / "tasks.jsonl"
+    if not path.exists():
+        raise StageBlocked(f"No tasks to validate: {path} not found (run ./4-benchmark.sh first, or give --input).")
+    tasks = read_jsonl(path) if path.suffix == ".jsonl" else (json.loads(path.read_text(encoding="utf-8")))
+    tasks = tasks.get("tasks", tasks) if isinstance(tasks, dict) else tasks
+    tax = load_taxonomy(cfg.resolve(cfg["classification"]["operations"]["taxonomy"]))
+    try:
+        m = run_validation(cfg, tax, tasks, log)
+    except ImageError as e:
+        raise StageBlocked(str(e)) from e
+    log(f"Verification: {m['accepted']} of {m['candidates']} tasks pass every gate "
+        f"(report: results/reports/benchmark_verification.md)")
+    if m["accepted"] != m["candidates"] and getattr(args, "strict", False):
+        raise SystemExit(1)
+
+
 def llm_spotcheck(cfg, args):
     from .validation.llm_annotation import spotcheck_report
     with open_db(cfg) as db, tracked_run(db, "llm-spotcheck", cfg, vars(args)) as run:
@@ -828,6 +957,8 @@ def statistics(cfg, args):
             " AND repo_id IN (%s) GROUP BY label ORDER BY repositories DESC" % (",".join(map(str, corpus.repos)) or "NULL"))]
         uncertainty = {
             "analysed_repositories": len(corpus.repos), "analysed_methods": len(corpus.method_repo),
+            "study_corpus": "filtered: see reports/corpus_filter.md" if study_repo_ids(db) is not None
+                            else "every mined repository (filter-corpus was not run)",
             "main_variant": main_variant, "parsed_methods_all_snapshots": snaps["m"], "parse_failures": snaps["f"],
             "unsupported_or_failed_files": unsupported,
             "method_status_distribution": {r["status"]: r["methods"] for r in statuses},
@@ -902,9 +1033,10 @@ def benchmark_coverage(cfg, args):
         for r in db.query("SELECT category_id, important_in_work, deserves_benchmark FROM developer_feedback"):
             feedback[r["category_id"]].append(r)
         support = defaultdict(list)
-        for r in db.query("SELECT DISTINCT ml.operation_id, r.full_name FROM method_labels ml JOIN methods m ON m.method_id=ml.method_id"
+        study = study_repo_ids(db)
+        for r in db.query("SELECT DISTINCT ml.operation_id, r.full_name, r.repo_id FROM method_labels ml JOIN methods m ON m.method_id=ml.method_id"
                           " JOIN repositories r ON r.repo_id=m.repo_id WHERE ml.label_source='rule_based'"):
-            if len(support[r["operation_id"]]) < 10:
+            if len(support[r["operation_id"]]) < 10 and (study is None or r["repo_id"] in study):
                 support[r["operation_id"]].append(r["full_name"])
         ops = [{"id": k, "name": c["name"], "level": c["level"], "concept_type": c["concept_type"],
                 "status": cat_status.get(k, "unvalidated"),

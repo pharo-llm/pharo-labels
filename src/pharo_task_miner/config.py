@@ -59,6 +59,14 @@ DEFAULTS: dict = {
                   "diversity_attributes": ["primary_domain", "size_category", "owner", "project_kind",
                                            "educational", "core_infrastructure"],
                   "size_categories": {"tiny": 10, "small": 50, "medium": 250, "large": 1000}},
+    # Study corpus (`pharo-miner filter-corpus`, ./1-2-filtering.sh); see docs/1-2-filtering.md
+    "corpus_filter": {
+        "max_repositories": 150, "require_license": True, "min_contributors": 2, "min_commits": 50,
+        "min_development_days": 180, "max_years_since_last_push": 5, "require_baseline": True, "require_tonel": True,
+        "min_non_test_methods": 200, "max_methods": 20000, "min_test_methods": 20, "min_test_method_share": 0.10,
+        "max_duplicated_method_share": 0.10, "max_parse_failure_share": 0.01,
+        "diversity_attributes": ["primary_domain", "size_category", "project_kind"], "max_per_owner": 5,
+        "random_seed": 42},
     "parsing": {"backend": "python", "pharo_vm": None, "pharo_image": None, "pharo_timeout": 900,
                  "primary_format": "tonel", "export_ast": True, "include_tests": True,
                  "include_extension_methods": True, "exclude_globs": []},
@@ -85,6 +93,16 @@ DEFAULTS: dict = {
     "statistics": {"bootstrap_iterations": 1000, "random_seed": 42, "confidence_level": 0.95,
                     "exclude_tests": False},
     "benchmarks": {"inputs": [], "min_covering_tasks_full": 2, "min_repo_prevalence": 0.1},
+    # Benchmark generation (`pharo-miner benchmark-generate`, ./4-benchmark.sh); see docs/4-benchmark.md
+    "benchmark_generation": {
+        "dir": "results/benchmark", "baseline": "PharoTaskBench", "class_prefix": "Ptb",
+        "pharo_version": "130", "mutalk_version": "v3.0.8", "pharo_vm": None, "pharo_image": None,
+        "author": None, "solvers": [], "operations": "auto", "tasks_per_operation": 3, "max_tasks": 0,
+        "seed_min_lines": 5, "seed_max_lines": 40, "random_seed": 42, "concurrency": 2,
+        "max_repair_rounds": 3, "max_amplification_rounds": 2, "solver_attempts": 2, "max_tokens": 6000,
+        "min_tests": 4, "max_target_methods": 2, "repeat": 3, "test_time_limit_seconds": 10, "job_timeout_seconds": 600,
+        "min_mutation_score": 0.8, "min_mutants": 4, "max_seed_similarity": 0.6,
+        "require_operation": True, "require_independent_solution": True},
     # Results snapshots on the Hugging Face Hub (`pharo-miner snapshot …`)
     "snapshot": {"repo": "pharo-llm/pharo-labels", "revision": "main", "include_api_cache": True,
                  "include_clones": False, "token_env": "HF_TOKEN"},

@@ -62,6 +62,26 @@ sampling:
   max_per_owner: 5
   manual_selection_file: null        # CSV with a full_name column (strategy: manual)
 
+corpus_filter:                       # ./1-2-filtering.sh: the study corpus used by steps 2, 3 and 4
+  # Each criterion is a separate threshold with its source in docs/1-2-filtering.md; 0/false = off.
+  # Every repository and the criteria it fails: results/tables/corpus_filter.csv.
+  max_repositories: 150              # above this, repositories are chosen for diversity (never for stars)
+  require_license: true              # benchmark tasks are redistributed with their provenance
+  min_contributors: 2                # not a personal repository
+  min_commits: 50                    # sustained development
+  min_development_days: 180          # between creation and last push
+  max_years_since_last_push: 5       # measured from the mining date: code for a current Pharo
+  require_baseline: true             # a Metacello BaselineOf class: the project can be loaded
+  require_tonel: true                # the source format of current Pharo
+  min_non_test_methods: 200          # enough production code
+  max_methods: 20000                 # image dumps and generated code
+  min_test_methods: 20               # behaviour is specified by tests
+  min_test_method_share: 0.10
+  max_duplicated_method_share: 0.10  # methods copied from another repository
+  max_parse_failure_share: 0.01
+  max_per_owner: 5                   # used only when more than max_repositories pass
+  random_seed: 42
+
 parsing:
   backend: python                    # python | pharo (needs pharo_vm + pharo_image)
   pharo_vm: null
@@ -105,6 +125,21 @@ llm_annotation:                      # ./2-ai-labelling.sh sets these from its S
   consensus: majority                # majority | unanimous (when there is no adjudicator)
   evidence_policy: enforce           # enforce: drop labels without verbatim evidence | record
   spotcheck_size: 30                 # items exported for a blind human spot-check
+  random_seed: 42
+
+benchmark_generation:                # ./4-benchmark.sh; the method is explained in docs/4-benchmark.md
+  pharo_version: "130"               # the image every task is validated in (get.pharo.org/64/<version>)
+  mutalk_version: v3.0.8             # mutation testing framework loaded into that image
+  tasks_per_operation: 3             # seed methods (candidate tasks) per operation
+  min_tests: 4                       # test methods a task needs
+  repeat: 3                          # times the tests must pass on the reference (once in reverse order)
+  min_mutation_score: 0.8            # share of the mutants of the reference the tests must detect
+  min_mutants: 4                     # fewer mutants = solution too small to assess its tests
+  max_seed_similarity: 0.6           # above this the solution counts as a copy of its seed method
+  max_repair_rounds: 3               # times a failing task is sent back with the image's error
+  max_amplification_rounds: 2        # times tests are requested against surviving mutants
+  require_operation: true            # the rule classifier must find the operation in the solution
+  require_independent_solution: true # a second model must solve the task from its statement
   random_seed: 42
 
 snapshot:                            # results saved on the Hugging Face Hub (./snapshot.sh, used by the step scripts)

@@ -10,6 +10,7 @@
 # The whole workflow in one cluster job, on one CPU-only node (chirop: 2 x Xeon Platinum 8358,
 # 64 cores, 512 GiB RAM, no GPU):
 #   1. ./1-mining.sh        results from the Hugging Face snapshot, or mined from GitHub
+#      ./1-2-filtering.sh   keeps the repositories worth labelling (150 at most)
 #   2. ./2-ai-labelling.sh  three big open-weight models label the sample, on an Ollama server
 #                           that this job installs and starts on the node (no sudo)
 #   3. ./3-results.sh       taxonomy, statistics, reports
@@ -197,6 +198,9 @@ log "1. MINING"
 log "============================================================"
 
 run_step "1-MINING" "$ROOT_DIR/1-mining.sh" "$@"
+
+# The study corpus: needs no token and no model, about two minutes
+run_step "1-2-FILTERING" "$ROOT_DIR/1-2-filtering.sh"
 
 
 ###############################################################################

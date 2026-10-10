@@ -54,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int)
     p.add_argument("--manual-file")
 
+    p = cmd("filter-corpus", "Keep the repositories that AI labelling, the results and the benchmark are based on")
+    p.add_argument("--max-repositories", type=int, dest="max_repositories",
+                   help="Size limit of the study corpus (default: corpus_filter.max_repositories)")
+
     p = cmd("clone", "Shallow-clone selected repositories (or reuse existing clones)")
     p.add_argument("--repos", nargs="*", help="owner/name list instead of the latest sample")
     p.add_argument("--local-only", action="store_true", help="Never clone; only register existing clones")
@@ -96,6 +100,21 @@ def build_parser() -> argparse.ArgumentParser:
     p = cmd("benchmark-coverage", "Compare the taxonomy with imported benchmark tasks and recommend candidates")
     p.add_argument("--input", action="append")
     p.add_argument("--allow-unvalidated", action="store_true")
+
+    p = cmd("benchmark-generate", "Synthesise benchmark tasks from mined operations and validate them in a Pharo image")
+    p.add_argument("--author", help="Model that writes the tasks (a name from models.yaml or an Ollama tag)")
+    p.add_argument("--solvers", help="Models that must solve each task from its statement alone ('none' skips that check)")
+    p.add_argument("--operations", help="Level-3 taxonomy ids (default: auto, from the benchmark coverage analysis)")
+    p.add_argument("--tasks-per-operation", type=int, dest="tasks_per_operation")
+    p.add_argument("--max-tasks", type=int, dest="max_tasks", help="Cap on the number of candidates (0 = no cap)")
+    p.add_argument("--limit", type=int, help="Only the first N seed methods (a cheap trial run)")
+    p.add_argument("--concurrency", type=int, help="Tasks processed in parallel")
+    p.add_argument("--print-requirements", action="store_true", help=argparse.SUPPRESS)
+
+    p = cmd("benchmark-validate", "Re-validate stored benchmark tasks in the Pharo image (no model is called)")
+    p.add_argument("--input", help="tasks.jsonl or .json (default: results/benchmark/tasks.jsonl)")
+    p.add_argument("--concurrency", type=int)
+    p.add_argument("--strict", action="store_true", help="Exit with status 1 unless every task passes every gate")
 
     p = cmd("report", "Generate figures, tables and Markdown reports")
     p.add_argument("--allow-unvalidated", action="store_true")
@@ -177,12 +196,14 @@ def pipeline(cfg, args):
 
 COMMANDS = {
     "discover": stages.discover, "verify": stages.verify, "metadata": stages.metadata,
-    "classify-domains": stages.classify_domains, "sample": stages.sample, "clone": stages.clone_stage,
+    "classify-domains": stages.classify_domains, "sample": stages.sample, "filter-corpus": stages.filter_corpus,
+    "clone": stages.clone_stage,
     "parse": stages.parse, "analyze": stages.analyze, "discover-operations": stages.discover_operations,
     "export-annotations": stages.export_annotations, "import-annotations": stages.import_annotations,
     "llm-spotcheck": stages.llm_spotcheck, "snapshot": stages.snapshot,
     "build-taxonomy": stages.build_taxonomy, "statistics": stages.statistics,
-    "benchmark-coverage": stages.benchmark_coverage, "report": stages.report, "status": stages.status,
+    "benchmark-coverage": stages.benchmark_coverage, "benchmark-generate": stages.benchmark_generate,
+    "benchmark-validate": stages.benchmark_validate, "report": stages.report, "status": stages.status,
     "models": stages.models,
 }
 

@@ -4,7 +4,14 @@ from __future__ import annotations
 from collections import defaultdict
 import random
 
+from ..sampling.corpus_filter import study_repo_ids
 from ..storage.database import Database, loads
+
+
+def _in_corpus(db: Database, column: str) -> str:
+    """SQL condition that keeps the repositories of the study corpus (nothing when it was never filtered)."""
+    study = study_repo_ids(db)
+    return "" if study is None else f" AND {column} IN ({','.join(map(str, sorted(study))) or 'NULL'})"
 
 
 def evidence_examples(db: Database, operation_id: str, label_source: str = "rule_based", k: int = 5,
@@ -14,7 +21,8 @@ def evidence_examples(db: Database, operation_id: str, label_source: str = "rule
         "SELECT ml.method_id, m.repo_id, r.full_name, s.commit_sha, m.source_path, m.class_name, m.side, m.selector, m.line"
         " FROM method_labels ml JOIN methods m ON m.method_id = ml.method_id"
         " JOIN repositories r ON r.repo_id = m.repo_id JOIN repository_snapshots s ON s.snapshot_id = m.snapshot_id"
-        " WHERE ml.operation_id=? AND ml.label_source=? AND m.duplicate_of_method_id IS NULL", (operation_id, label_source))
+        " WHERE ml.operation_id=? AND ml.label_source=? AND m.duplicate_of_method_id IS NULL" + _in_corpus(db, "m.repo_id"),
+        (operation_id, label_source))
     by_repo = defaultdict(list)
     for r in rows:
         by_repo[r["repo_id"]].append(r)
@@ -35,7 +43,10 @@ def evidence_examples(db: Database, operation_id: str, label_source: str = "rule
 
 def cooccurrence(db: Database, label_source: str = "rule_based", min_methods: int = 20) -> dict[str, list[dict]]:
     """Related categories by lift of method-level co-occurrence."""
-    rows = db.query("SELECT method_id, operation_id FROM method_labels WHERE label_source=?", (label_source,))
+    study = study_repo_ids(db)
+    rows = db.query("SELECT method_id, operation_id FROM method_labels WHERE label_source=?"
+                    + ("" if study is None else " AND method_id IN (SELECT method_id FROM methods WHERE repo_id IN (%s))"
+                       % (",".join(map(str, sorted(study))) or "NULL")), (label_source,))
     by_method = defaultdict(set)
     for r in rows:
         by_method[r["method_id"]].add(r["operation_id"])

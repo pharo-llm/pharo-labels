@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# STEP 2 — AI labelling: language models label the 300 sampled methods, in place of (or before)
+# STEP 2 — AI labelling: language models label 300 methods sampled from the study corpus (the
+# repositories kept by ./1-2-filtering.sh, 150 at most), in place of (or before)
 # human annotators. Each model works independently on the same guidelines humans use; their
 # labels are combined, agreement between models is measured, and a small random subset is
 # exported for a human spot-check.
@@ -48,8 +49,11 @@ PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-yes}"
 source "$(dirname "$0")/scripts/_common.sh"
 LOG=results/ai-labelling.log
 
+if [ ! -s results/data/processed/corpus.json ]; then
+  echo "The study corpus is not filtered yet: run ./1-2-filtering.sh first."; exit 1
+fi
 if [ ! -s results/validation/annotation_sample.csv ]; then
-  echo "No annotation sample yet: run ./1-mining.sh first."; exit 1
+  echo "No annotation sample yet: run ./1-2-filtering.sh first."; exit 1
 fi
 
 # What the chosen models need: API keys and/or local Ollama models

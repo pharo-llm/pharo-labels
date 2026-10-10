@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from . import charts, tables
+from ..sampling.corpus_filter import study_repo_ids
 from ..sampling.repository_filters import repository_profiles
 from ..storage.database import Database, loads
 from ..storage.provenance import now_iso
@@ -74,6 +75,9 @@ def generate(cfg, db: Database, allow_unvalidated: bool = False) -> dict:
     counts["operation_evidence_csv"] = tables.operation_evidence_csv(db, tdir / "operation_evidence.csv")
     profiles = repository_profiles(db, cfg)
     analysed = {r[0] for r in db.query("SELECT DISTINCT repo_id FROM repository_snapshots WHERE n_methods > 0")}
+    study = study_repo_ids(db)
+    if study is not None:  # the results describe the study corpus (filter-corpus), not every mined repository
+        analysed &= study
     prof_an = [p for p in profiles if p["repo_id"] in analysed]
     cats = [dict(r) for r in db.query("SELECT * FROM taxonomy_categories WHERE taxonomy_version="
                                       "(SELECT MAX(taxonomy_version) FROM taxonomy_categories)")]
@@ -137,6 +141,8 @@ def _ecosystem_summary(cfg, db, out: Path, stats, prof, banner, bc):
         L.append(f"- Analysed: **{u['analysed_repositories']} repositories**, **{u['analysed_methods']} methods** "
                  f"(variant `{u['main_variant']}`); parse failures: {u['parse_failures']}; unsupported/failed source files: "
                  f"{u['unsupported_or_failed_files']}.")
+        if u.get("study_corpus"):
+            L.append(f"- Study corpus: {u['study_corpus']}.")
         dom = [d for d in stats["domains"] if d["domain"] != "unknown"]
         ops3 = [r for r in stats["operations"] if r.get("level") == 3]
         feats = stats["language_features"]

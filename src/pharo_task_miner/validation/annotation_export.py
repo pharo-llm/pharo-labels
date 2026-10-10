@@ -34,7 +34,8 @@ def _write_csv(path: Path, rows: list[dict], columns: list[str]):
         w.writerows(rows)
 
 
-def select_sample(db: Database, size: int, seed: int, max_per_repo: int, include_tests: bool = True) -> list[dict]:
+def select_sample(db: Database, size: int, seed: int, max_per_repo: int, include_tests: bool = True,
+                  repo_ids: set[int] | None = None) -> list[dict]:
     rows = db.query(
         "SELECT m.method_id, m.repo_id, m.is_test, ms.status FROM methods m"
         " JOIN method_status ms ON ms.method_id=m.method_id AND ms.label_source='rule_based'"
@@ -46,6 +47,8 @@ def select_sample(db: Database, size: int, seed: int, max_per_repo: int, include
     strata = defaultdict(list)
     for r in rows:
         if not include_tests and r["is_test"]:
+            continue
+        if repo_ids is not None and r["repo_id"] not in repo_ids:
             continue
         l2 = sorted({parent.get(o) for o in labels[r["method_id"]] if parent.get(o)})
         key = r["status"] if r["status"] != "classified" else (l2[0] if l2 else "classified")
@@ -70,13 +73,14 @@ def select_sample(db: Database, size: int, seed: int, max_per_repo: int, include
 
 
 def export(db: Database, out_dir: Path, size: int, seed: int, max_per_repo: int, annotators: list[str],
-           overlap_fraction: float, guidelines_src: Path | None, taxonomy_rows: list[dict]) -> dict:
+           overlap_fraction: float, guidelines_src: Path | None, taxonomy_rows: list[dict],
+           repo_ids: set[int] | None = None) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     sample_path = out_dir / "annotation_sample.csv"
     if sample_path.exists():
         return {"status": "kept_existing", "path": str(sample_path),
                 "note": "annotation_sample.csv already exists; delete it explicitly to draw a new sample"}
-    chosen = select_sample(db, size, seed, max_per_repo)
+    chosen = select_sample(db, size, seed, max_per_repo, repo_ids=repo_ids)
     ids = [c["method_id"] for c in chosen]
     info = {}
     if ids:
