@@ -17,7 +17,9 @@
 #   4. ./4-benchmark.sh     one model writes benchmark tasks, a Pharo image validates them,
 #                           another model solves them (RUN_BENCHMARK=no skips this step)
 #
-#   oarsub -S ./job.oar.sh          submit (from the repository folder)
+#   ./submit-gpu.sh                 finds a free GPU node on any site and starts this job on it:
+#                                   the same job, much faster. Ollama uses the GPUs by itself.
+#   oarsub -S ./job.oar.sh          submit on the CPU node named in the #OAR lines above
 #   bash job.oar.sh                 or run it directly on a reserved node
 #
 # There is no terminal in a batch job, so secrets must be in .env before submitting:
@@ -45,8 +47,9 @@ MAX_REPOSITORIES=150
 
 # How many of those repositories the AI labels in step 2. EVERY method of each one is labelled.
 # The repositories are chosen for diversity of domain, size and kind.
-# Count the time: a repository has about 1,300 methods (some more than 10,000), and on this
-# CPU node a big model needs up to 16 seconds per method. With the three models below:
+# Count the time: a repository has about 1,300 methods (some more than 10,000), and on a
+# CPU node a big model needs up to 16 seconds per method (a GPU node is much faster: start
+# the job with ./submit-gpu.sh). With the three models below:
 #    5 repositories = about 20,000 methods      10 = about 26,000      20 = about 70,000
 # The job can be resubmitted as often as needed: answers are kept and it continues.
 # 0 = label a sample of SAMPLE_SIZE methods taken across all the repositories instead.

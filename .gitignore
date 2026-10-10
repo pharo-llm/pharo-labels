@@ -11,3 +11,5 @@ results/.snapshot_staging/
 oar-runs/
 pharo-labels.*.out
 pharo-labels.*.err
+# last job started by submit-gpu.sh
+.gpu-job
