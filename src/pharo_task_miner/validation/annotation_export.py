@@ -72,22 +72,49 @@ def select_sample(db: Database, size: int, seed: int, max_per_repo: int, include
     return chosen
 
 
+def select_repositories(db: Database, repo_ids: set[int]) -> list[dict]:
+    """Every parsed method of the given repositories (latest snapshot), except the methods copied
+    from another repository. Same row shape as ``select_sample``."""
+    if not repo_ids:
+        return []
+    labels = defaultdict(set)
+    rows = db.query(
+        "SELECT m.method_id, m.repo_id, m.is_test, ms.status FROM methods m"
+        " JOIN method_status ms ON ms.method_id=m.method_id AND ms.label_source='rule_based'"
+        " WHERE m.parse_status='ok' AND m.duplicate_of_method_id IS NULL AND m.repo_id IN (%s)"
+        " AND m.snapshot_id IN (SELECT MAX(snapshot_id) FROM repository_snapshots GROUP BY repo_id)"
+        " ORDER BY m.repo_id, m.method_id" % ",".join(map(str, sorted(repo_ids))))
+    for r in db.query("SELECT ml.method_id, ml.operation_id FROM method_labels ml JOIN methods m ON m.method_id=ml.method_id"
+                      " WHERE ml.label_source='rule_based' AND m.repo_id IN (%s)" % ",".join(map(str, sorted(repo_ids)))):
+        labels[r["method_id"]].add(r["operation_id"])
+    parent = {r["category_id"]: r["parent_id"] for r in db.query("SELECT category_id, parent_id FROM taxonomy_categories")}
+    out = []
+    for r in rows:
+        l2 = sorted({parent.get(o) for o in labels[r["method_id"]] if parent.get(o)})
+        out.append({**dict(r), "stratum": r["status"] if r["status"] != "classified" else (l2[0] if l2 else "classified")})
+    return out
+
+
 def export(db: Database, out_dir: Path, size: int, seed: int, max_per_repo: int, annotators: list[str],
            overlap_fraction: float, guidelines_src: Path | None, taxonomy_rows: list[dict],
-           repo_ids: set[int] | None = None) -> dict:
+           repo_ids: set[int] | None = None, chosen: list[dict] | None = None) -> dict:
+    """``chosen``: the methods to export when they were already selected (whole repositories);
+    otherwise a stratified sample of ``size`` methods is drawn."""
     out_dir.mkdir(parents=True, exist_ok=True)
     sample_path = out_dir / "annotation_sample.csv"
     if sample_path.exists():
         return {"status": "kept_existing", "path": str(sample_path),
                 "note": "annotation_sample.csv already exists; delete it explicitly to draw a new sample"}
-    chosen = select_sample(db, size, seed, max_per_repo, repo_ids=repo_ids)
+    if chosen is None:
+        chosen = select_sample(db, size, seed, max_per_repo, repo_ids=repo_ids)
     ids = [c["method_id"] for c in chosen]
     info = {}
-    if ids:
+    for start in range(0, len(ids), 5000):  # whole repositories: too many ids for one statement
         q = ("SELECT m.method_id, r.full_name, s.commit_sha, m.source_path, m.line, m.class_name, m.side, m.selector,"
              " m.protocol, m.source FROM methods m JOIN repositories r ON r.repo_id=m.repo_id"
-             " JOIN repository_snapshots s ON s.snapshot_id=m.snapshot_id WHERE m.method_id IN (%s)" % ",".join(map(str, ids)))
-        info = {r["method_id"]: r for r in db.query(q)}
+             " JOIN repository_snapshots s ON s.snapshot_id=m.snapshot_id WHERE m.method_id IN (%s)"
+             % ",".join(map(str, ids[start:start + 5000])))
+        info.update({r["method_id"]: r for r in db.query(q)})
     domains = defaultdict(list)
     for r in db.query("SELECT repo_id, label FROM domain_labels WHERE method='deterministic_rules'"):
         domains[r["repo_id"]].append(r["label"])

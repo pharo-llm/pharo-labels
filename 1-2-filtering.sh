@@ -6,7 +6,7 @@
 # projects whose code can serve a benchmark for writing and fixing Pharo code: licensed,
 # developed by several people over time, loadable in a current Pharo, tested, original.
 # These repositories are the "study corpus". Steps 2, 3 and 4 use nothing else:
-#   2-ai-labelling.sh   the 300 methods to label are drawn from them
+#   2-ai-labelling.sh   the methods to label come from them (a sample, or whole repositories)
 #   3-results.sh        the taxonomy and the statistics describe them
 #   4-benchmark.sh      the seed methods of the benchmark tasks come from them
 # Every criterion is a separate threshold taken from the literature: docs/1-2-filtering.md
@@ -23,6 +23,18 @@
 # for diversity of domain, size and kind (never for stars). Empty = corpus_filter.max_repositories
 # in config.yaml (150).
 MAX_REPOSITORIES="${MAX_REPOSITORIES:-}"
+
+# What step 2 labels. Two ways:
+#   LABEL_REPOSITORIES=10   every method of 10 repositories of the study corpus. The
+#                           repositories are chosen for diversity of domain, size and kind.
+#                           A repository has about 1,300 methods (some more than 10,000), so
+#                           this is thousands of methods per repository: plan the model time.
+#   LABEL_REPOSITORIES=0    a sample of SAMPLE_SIZE methods taken across the whole study corpus.
+# Empty = validation.label_repositories / annotation_sample_size in config.yaml (0 / 300).
+# When the methods to label change, the previous ones are moved aside with their labels
+# (not deleted).
+LABEL_REPOSITORIES="${LABEL_REPOSITORIES:-}"
+SAMPLE_SIZE="${SAMPLE_SIZE:-}"
 
 # The thresholds themselves (licence, contributors, commits, tests, duplication, ...) are in
 # config.yaml under corpus_filter. Each setting keeps the value above unless a variable of the
@@ -41,9 +53,12 @@ args=()
 
 echo "== Filtering $(date '+%Y-%m-%d %H:%M')" >> "$LOG"
 run_logged "$LOG" "$MINER" filter-corpus ${args[@]+"${args[@]}"} || { echo "Stopped: see the message above (log: $LOG)"; exit 1; }
-# Draws the 300-method sample from the study corpus (an existing sample of the same corpus is kept)
-run_logged "$LOG" "$MINER" export-annotations || { echo "Stopped: see the message above (log: $LOG)"; exit 1; }
+# Writes the methods step 2 will label (when they are the same as before, nothing changes)
+size_args=()
+[ -n "$SAMPLE_SIZE" ] && size_args+=(--size "$SAMPLE_SIZE")
+[ -n "$LABEL_REPOSITORIES" ] && size_args+=(--label-repositories "$LABEL_REPOSITORIES")
+run_logged "$LOG" "$MINER" export-annotations ${size_args[@]+"${size_args[@]}"} || { echo "Stopped: see the message above (log: $LOG)"; exit 1; }
 echo
 echo "Study corpus: results/reports/corpus_filter.md   (every repository and why: results/tables/corpus_filter.csv)"
-echo "The 300-method sample is in results/validation/annotation_sample.csv."
+echo "The methods to label are in results/validation/annotation_sample.csv."
 echo "Next: ./2-ai-labelling.sh   (or have people fill results/validation/reviewer_decisions.csv)"

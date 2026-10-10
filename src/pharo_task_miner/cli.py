@@ -73,7 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", help="Model name from models.yaml, or any Ollama tag")
 
     p = cmd("export-annotations", "Export a stratified blind annotation sample and templates")
-    p.add_argument("--size", type=int)
+    p.add_argument("--size", type=int, help="Methods to sample; an existing sample of another size is moved aside and redrawn")
+
+    p.add_argument("--label-repositories", type=int, dest="label_repositories",
+                   help="Label every method of N repositories of the study corpus instead of a sample of methods (0 = sample)")
 
     cmd("import-annotations", "Import annotator decisions, compute agreement, import adjudicated labels and feedback")
 

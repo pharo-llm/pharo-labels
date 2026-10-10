@@ -39,7 +39,8 @@ whose code can serve such a benchmark?**
    no combined score and no weighting.
 3. **Limits the size** to `max_repositories` (150). Only when more repositories pass is a
    choice made, and it is made for diversity, never for popularity.
-4. **Draws the 300-method sample** of step 2 from the study corpus.
+4. **Writes the methods step 2 will label**, taken from the study corpus: either every method
+   of a number of its repositories, or a sample of methods across all of them.
 
 ## The criteria
 
@@ -143,7 +144,7 @@ Two things are **not** measured, and are limits of this step:
 
 | Step | Effect |
 |---|---|
-| [2: AI labelling](2-ai-labelling.md) | The 300 methods to label are drawn from the study corpus |
+| [2: AI labelling](2-ai-labelling.md) | The methods to label come from the study corpus |
 | [3: results](3-results.md) | Taxonomy, prevalence, domains and figures describe the study corpus |
 | [4: benchmark](4-benchmark.md) | Seed methods are taken from the study corpus only |
 
@@ -166,6 +167,23 @@ At the top of `1-2-filtering.sh`:
 | Setting | Meaning |
 |---|---|
 | `MAX_REPOSITORIES` | Size limit of the study corpus. Empty = `corpus_filter.max_repositories` (150) |
+| `LABEL_REPOSITORIES` | Step 2 labels every method of this many repositories. `0` or empty = a sample of methods instead |
+| `SAMPLE_SIZE` | Only without `LABEL_REPOSITORIES`: methods sampled across the study corpus. Empty = `validation.annotation_sample_size` (300) |
+
+### Two numbers: how many repositories continue, how many are labelled
+
+- `MAX_REPOSITORIES` is how many repositories go on to the results and the benchmark.
+- `LABEL_REPOSITORIES` is how many of those the models label, method by method.
+
+They differ because labelling is the expensive part. The rule labels of step 1 exist for
+every method of every repository; the AI labels are the reference they are checked against.
+The repositories to label are chosen like the corpus itself when it is too large: the next
+one is always the one whose domain, size and kind are least represented so far [3], with a
+fixed seed. Every parsed method is taken, tests included, except methods copied from another
+repository. The list is written to `results/validation/labelled_repositories.csv`.
+
+When the methods to label change, the previous ones are moved aside with their labels (not
+deleted).
 
 In `config.yaml`, under `corpus_filter` (0 or `false` switches a criterion off):
 
@@ -198,7 +216,8 @@ always gives the same corpus.
 | `results/reports/corpus_filter.md` | The funnel, the domains and the list of selected repositories |
 | `results/tables/corpus_filter.csv` | Every mined repository: measurements, decision, every criterion failed |
 | `results/data/processed/corpus.json` | The thresholds used, the funnel and the selected repositories |
-| `results/validation/annotation_sample.csv` | The 300 methods to label in step 2 |
+| `results/validation/annotation_sample.csv` | The methods to label in step 2 |
+| `results/validation/labelled_repositories.csv` | With `LABEL_REPOSITORIES`: the repositories labelled entirely |
 
 ## When something goes wrong
 

@@ -32,57 +32,94 @@ ROOT_DIR="$ROOT"
 
 
 ###############################################################################
-# Configuration
+# SETTINGS
 #
-# Edit the defaults here. Variables of the same name set at submission time
-# override them.
+# Everything you may want to change is here: write the value you want and submit the job.
+# Nothing has to be passed on the command line.
 ###############################################################################
 
+# ---- Step 1-2: filtering -----------------------------------------------------------------
+# How many repositories go on to the results (step 3) and the benchmark (step 4), at most.
+# The filter currently lets 135 through, so 150 keeps them all.
+MAX_REPOSITORIES=150
+
+# How many of those repositories the AI labels in step 2. EVERY method of each one is labelled.
+# The repositories are chosen for diversity of domain, size and kind.
+# Count the time: a repository has about 1,300 methods (some more than 10,000), and on this
+# CPU node a big model needs up to 16 seconds per method. With the three models below:
+#    5 repositories = about 20,000 methods      10 = about 26,000      20 = about 70,000
+# The job can be resubmitted as often as needed: answers are kept and it continues.
+# 0 = label a sample of SAMPLE_SIZE methods taken across all the repositories instead.
+LABEL_REPOSITORIES=5
+
+# Only used when LABEL_REPOSITORIES=0.
+SAMPLE_SIZE=300
+
+# ---- Step 2: AI labelling ----------------------------------------------------------------
 # The annotators (names from models.yaml). Chosen for the best labels this node can produce
 # without a GPU: the strongest practical model of three different families, so that a label
 # kept by the majority vote was found independently by at least two of them.
 #   cluster-qwen-coder-32b   qwen2.5-coder:32b   20 GB   Alibaba, code-specialised
 #   cluster-llama-3.3-70b    llama3.3:70b        43 GB   Meta, strongest general model
 #   cluster-gemma3-27b       gemma3:27b          17 GB   Google
-export MODELS="${MODELS:-cluster-qwen-coder-32b cluster-llama-3.3-70b cluster-gemma3-27b}"
+MODELS="cluster-qwen-coder-32b cluster-llama-3.3-70b cluster-gemma3-27b"
+
+# 0 = label all the methods chosen above. For a first trial of the job, write 10: only the
+# first 10 methods are then labelled.
+LIMIT=0
 
 # No adjudicator: adjudication asks one model at a time, which is too slow on CPU for a big
 # model, and three annotators already give a majority.
-export ADJUDICATOR="${ADJUDICATOR:-}"
-export CONSENSUS="${CONSENSUS:-majority}"
-export EVIDENCE_POLICY="${EVIDENCE_POLICY:-enforce}"
+ADJUDICATOR=""
+CONSENSUS="majority"
+EVIDENCE_POLICY="enforce"
+SPOTCHECK_SIZE=30
 
-# 0 = all 300 methods. For a first trial of the job: LIMIT=10
-export LIMIT="${LIMIT:-0}"
-export SPOTCHECK_SIZE="${SPOTCHECK_SIZE:-30}"
+# ---- Step 3: results ---------------------------------------------------------------------
+# Benchmark task files to compare with the taxonomy ("" = skip).
+BENCHMARKS=""
 
-# Requests Ollama answers at the same time. Must not be lower than `concurrency` of the
-# cluster-* models in models.yaml (4), or requests queue and may time out.
-OLLAMA_PARALLEL="${OLLAMA_PARALLEL:-4}"
+# ---- Step 4: benchmark generation --------------------------------------------------------
+# yes = generate the benchmark; no = stop after step 3.
+RUN_BENCHMARK="yes"
 
-# Step 3: benchmark task files to compare with the taxonomy ("" = skip).
-export BENCHMARKS="${BENCHMARKS:-}"
-
-# Step 4: benchmark generation. yes | no
-RUN_BENCHMARK="${RUN_BENCHMARK:-yes}"
 # The model that writes the tasks, and the models that must solve each task from its statement
 # alone. Two different families, so the second check is independent; both are already
 # downloaded for step 2. An API model (models.yaml) also works when its key is in .env.
-export AUTHOR="${AUTHOR:-cluster-qwen-coder-32b}"
-export SOLVERS="${SOLVERS:-cluster-gemma3-27b}"
-export OPERATIONS="${OPERATIONS:-auto}"
-export TASKS_PER_OPERATION="${TASKS_PER_OPERATION:-3}"
-# 0 = all seed methods. For a first trial of the job: BENCHMARK_LIMIT=5
-BENCHMARK_LIMIT="${BENCHMARK_LIMIT:-0}"
+AUTHOR="cluster-qwen-coder-32b"
+SOLVERS="cluster-gemma3-27b"
+
+# Operations to cover: auto, or a list of ids.
+OPERATIONS="auto"
+
+# Candidate tasks per operation. Expect a part of them to be rejected.
+TASKS_PER_OPERATION=3
+
+# How many candidate tasks are attempted in total. 0 = all of them
+# (operations x TASKS_PER_OPERATION). For a first trial of the job, write 5.
+BENCHMARK_LIMIT=0
+
 # Tasks processed at the same time (each one runs its own copy of the Pharo image).
-BENCHMARK_CONCURRENCY="${BENCHMARK_CONCURRENCY:-2}"
+BENCHMARK_CONCURRENCY=2
+
+# ---- Hugging Face and Ollama -------------------------------------------------------------
+# Upload results to Hugging Face after each step: auto = only when HF_TOKEN is in .env; yes | no
+PUSH_SNAPSHOT="auto"
+
+# Requests Ollama answers at the same time. Must not be lower than `concurrency` of the
+# cluster-* models in models.yaml (4), or requests queue and may time out.
+OLLAMA_PARALLEL=4
 
 # Models Ollama keeps in memory together. Step 4 alternates between the author and the solver
 # for every task; with 1, each switch would reload a 20 GB model from disk.
-OLLAMA_MAX_LOADED="${OLLAMA_MAX_LOADED:-3}"
+OLLAMA_MAX_LOADED=3
 
-# Upload results to Hugging Face after each step: auto = only when HF_TOKEN is in .env.
-PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-auto}"
+###############################################################################
+# End of SETTINGS
+###############################################################################
+
+export MAX_REPOSITORIES LABEL_REPOSITORIES SAMPLE_SIZE MODELS LIMIT ADJUDICATOR CONSENSUS EVIDENCE_POLICY SPOTCHECK_SIZE BENCHMARKS
+export AUTHOR SOLVERS OPERATIONS TASKS_PER_OPERATION
 if [ "$PUSH_SNAPSHOT" = "auto" ]; then
     if [ -n "${HF_TOKEN:-}" ]; then PUSH_SNAPSHOT="yes"; else PUSH_SNAPSHOT="no"; fi
 fi
@@ -180,7 +217,8 @@ log "Results directory: $RESULTS_DIR"
 log "Ollama install directory: $OLLAMA_INSTALL_DIR"
 log "Ollama models directory: $OLLAMA_MODELS_DIR"
 log "Models: $MODELS${ADJUDICATOR:+; adjudicator: $ADJUDICATOR}"
-log "Methods to label: $([ "$LIMIT" = "0" ] && echo all || echo "first $LIMIT")"
+log "Study corpus: at most $MAX_REPOSITORIES repositories"
+log "AI labelling: $([ "$LABEL_REPOSITORIES" = "0" ] && echo "a sample of $SAMPLE_SIZE methods" || echo "every method of $LABEL_REPOSITORIES repositories")$([ "$LIMIT" = "0" ] || echo " (trial: first $LIMIT methods only)")"
 if [ "$RUN_BENCHMARK" = "yes" ]; then
     log "Benchmark: author $AUTHOR; solvers $SOLVERS; $TASKS_PER_OPERATION tasks per operation; seeds: $([ "$BENCHMARK_LIMIT" = "0" ] && echo all || echo "first $BENCHMARK_LIMIT")"
     # Fail now, not after a day of labelling

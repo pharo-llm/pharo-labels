@@ -115,6 +115,8 @@ semantic:                            # optional local LLM; models are listed in 
 validation:
   require_human_review: true         # taxonomy/statistics/reports wait for reviewed labels
   label_source: auto                 # reviewed labels to use: auto (human if imported, else LLM) | human | llm
+  label_repositories: 0              # N = step 2 labels every method of N repositories of the study corpus;
+                                     # 0 = it labels a sample of annotation_sample_size methods
   annotation_sample_size: 300
   overlap_fraction: 0.3
   annotators: [annotator_1, annotator_2]

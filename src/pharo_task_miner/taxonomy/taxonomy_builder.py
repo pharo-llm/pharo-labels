@@ -41,9 +41,11 @@ def human_label_stats(db: Database, basis: str = "human_adjudicated") -> tuple[d
     if not adjud:
         return {}, {}, proposed
     auto = {}
-    for r in db.query("SELECT method_id, operation_id FROM method_labels WHERE label_source='rule_based' AND method_id IN (%s)"
-                      % ",".join(str(m) for m in adjud)):
-        auto.setdefault(r["method_id"], set()).add(r["operation_id"])
+    ids = sorted(adjud)
+    for start in range(0, len(ids), 5000):  # whole repositories may be labelled: too many ids for one statement
+        for r in db.query("SELECT method_id, operation_id FROM method_labels WHERE label_source='rule_based' AND method_id IN (%s)"
+                          % ",".join(map(str, ids[start:start + 5000]))):
+            auto.setdefault(r["method_id"], set()).add(r["operation_id"])
     cats = set().union(*adjud.values(), *auto.values()) if auto else set().union(*adjud.values())
     stats, negatives = {}, {}
     for c in cats:
@@ -66,9 +68,9 @@ def build(db: Database, tax: dict, prevalence: dict[str, dict], discovery: dict,
     method_ref = {}
     if negatives:
         ids = sorted({m for v in negatives.values() for m in v})
-        if ids:
+        for start in range(0, len(ids), 5000):
             for r in db.query("SELECT m.method_id, r.full_name, m.class_name, m.selector FROM methods m JOIN repositories r"
-                              " ON r.repo_id=m.repo_id WHERE m.method_id IN (%s)" % ",".join(map(str, ids))):
+                              " ON r.repo_id=m.repo_id WHERE m.method_id IN (%s)" % ",".join(map(str, ids[start:start + 5000]))):
                 method_ref[r["method_id"]] = {"repository": r["full_name"], "method": f"{r['class_name']}>>{r['selector']}"}
     cats = []
     for c in tax["categories"]:

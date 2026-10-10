@@ -649,14 +649,46 @@ def _semantic_methods(cfg, db, tax, run, limit, model=None):
 
 # --------------------------------------------------------------------------- validation
 def export_annotations(cfg, args):
-    from .validation.annotation_export import export
+    from .sampling.corpus_filter import repositories_to_label
+    from .validation.annotation_export import export, select_repositories, select_sample
     vcfg = cfg["validation"]
     with open_db(cfg) as db, tracked_run(db, "export-annotations", cfg, vars(args)) as run:
         tax_rows = [dict(r) for r in db.query("SELECT category_id, parent_id, level, definition FROM taxonomy_categories"
                                               " WHERE taxonomy_version=(SELECT MAX(taxonomy_version) FROM taxonomy_categories)")]
-        res = export(db, cfg.validation_dir, args.size or vcfg["annotation_sample_size"], vcfg["random_seed"],
+        size = args.size or vcfg["annotation_sample_size"]
+        n_repos = getattr(args, "label_repositories", None)
+        n_repos = int(vcfg.get("label_repositories") or 0) if n_repos is None else n_repos
+        explicit = bool(args.size) or getattr(args, "label_repositories", None) is not None
+        study, chosen, repos = study_repo_ids(db), None, []
+        if n_repos and study is None and not explicit:
+            n_repos = 0  # mining, before the study corpus exists: a first sample, replaced by ./1-2-filtering.sh
+        if n_repos:
+            # every method of n repositories of the study corpus, instead of a sample of methods
+            if study is None:
+                raise StageBlocked("Labelling whole repositories needs the study corpus: run ./1-2-filtering.sh "
+                                   "(`pharo-miner filter-corpus`) first.")
+            repos = repositories_to_label(db, n_repos, cfg["corpus_filter"])
+            chosen = select_repositories(db, {r["repo_id"] for r in repos})
+        existing = cfg.validation_dir / "annotation_sample.csv"
+        if explicit and existing.exists():
+            with existing.open(encoding="utf-8", newline="") as f:
+                have = {int(r["method_id"]) for r in csv.DictReader(f)}
+            want = chosen if chosen is not None else select_sample(db, size, vcfg["random_seed"], vcfg["max_per_repository"],
+                                                                   repo_ids=study)
+            if have != {c["method_id"] for c in want}:  # other methods are asked for: the old ones are moved aside
+                log(f"The methods to label changed ({len(have)} before, {len(want)} now): the previous ones and their "
+                    f"labels were moved to {_reset_validation(cfg, db, 'resampling')}.")
+        res = export(db, cfg.validation_dir, size, vcfg["random_seed"],
                      vcfg["max_per_repository"], vcfg["annotators"], float(vcfg["overlap_fraction"]),
-                     cfg.resolve("taxonomy/annotation_guidelines.md"), tax_rows, repo_ids=study_repo_ids(db))
+                     cfg.resolve("taxonomy/annotation_guidelines.md"), tax_rows, repo_ids=study, chosen=chosen)
+        if repos and res["status"] == "exported":
+            per = Counter(c["repo_id"] for c in chosen)
+            write_csv(cfg.validation_dir / "labelled_repositories.csv",
+                      [{"repository": r["full_name"], "domain": r["primary_domain"], "methods_to_label": per[r["repo_id"]]}
+                       for r in repos])
+            res["repositories"] = len(repos)
+            log(f"Every method of {len(repos)} repositories is to be labelled: {len(chosen)} methods "
+                f"(list: {cfg.validation_dir / 'labelled_repositories.csv'}).")
         run.counts.update({k: v for k, v in res.items() if k != "strata"})
         log(json.dumps(res, indent=1))
 

@@ -191,6 +191,22 @@ def study_repo_ids(db: Database) -> set[int] | None:
     return {r[0] for r in db.query("SELECT repo_id FROM corpus_decisions WHERE run_id=? AND decision='included'", (run,))}
 
 
+def repositories_to_label(db: Database, n: int, f: dict) -> list[dict]:
+    """``n`` repositories of the study corpus whose methods are all labelled in step 2, chosen
+    like the corpus itself when it is too large: greedy coverage of domain, size and kind,
+    seeded, so the same corpus and the same ``n`` always give the same repositories."""
+    run = db.scalar("SELECT run_id FROM analysis_runs WHERE stage=? AND status='completed' ORDER BY started_at DESC LIMIT 1",
+                    (STAGE,))
+    rows = [json.loads(r[0]) for r in db.query(
+        "SELECT metrics_json FROM corpus_decisions WHERE run_id=? AND decision='included'", (run,))] if run else []
+    rows.sort(key=lambda r: r["full_name"].lower())
+    if n >= len(rows):
+        return rows
+    chosen, _ = diversity(rows, n, list(f["diversity_attributes"]), random.Random(int(f["random_seed"])),
+                          int(f.get("max_per_owner") or 0))
+    return sorted(chosen, key=lambda r: r["full_name"].lower())
+
+
 def write_report(path, cfg, funnel: list[dict], decisions: list[dict], info: dict, mined: str | None):
     f = cfg["corpus_filter"]
     inc = sorted((d for d in decisions if d["decision"] == "included"), key=lambda d: d["full_name"].lower())

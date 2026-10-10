@@ -82,7 +82,7 @@ DEFAULTS: dict = {
     },
     "semantic": {"models_file": "models.yaml", "use": None, "max_methods": 200,
                   "max_tokens": 1500, "num_ctx": 8192, "timeout_seconds": 300, "seed": 42},
-    "validation": {"require_human_review": True, "label_source": "auto", "annotation_sample_size": 300,
+    "validation": {"require_human_review": True, "label_source": "auto", "annotation_sample_size": 300, "label_repositories": 0,
                     "overlap_fraction": 0.3, "max_per_repository": 15, "random_seed": 42,
                     "annotators": ["annotator_1", "annotator_2"]},
     # LLM annotation panel (`pharo-miner llm-annotate`, ./2-ai-labelling.sh); models are defined in models.yaml
