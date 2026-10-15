@@ -181,7 +181,8 @@ class OllamaProvider(_HTTPProvider):
 
     def __init__(self, profile: dict):
         super().__init__(profile)
-        self.base_url = (profile.get("base_url") or "http://localhost:11434").rstrip("/")
+        from ..analysis.semantic_classifier import default_ollama_url
+        self.base_url = (profile.get("base_url") or default_ollama_url()).rstrip("/")
         self.num_ctx = int(profile.get("num_ctx") or 16384)
         self.max_num_ctx = int(profile.get("max_num_ctx") or 65536)
         self.think = profile.get("think")

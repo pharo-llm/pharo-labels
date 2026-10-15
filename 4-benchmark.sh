@@ -74,7 +74,7 @@ for line in ${req_lines[@]+"${req_lines[@]}"}; do
       fi ;;
     ollama)
       command -v ollama >/dev/null || { echo "Ollama is not installed (https://ollama.com), but $value needs it."; exit 1; }
-      if ! curl -sf http://localhost:11434/api/tags >/dev/null; then
+      if ! curl -sf "http://${OLLAMA_HOST:-localhost:11434}/api/tags" >/dev/null; then
         echo "Ollama is not running. Open the Ollama app or run 'ollama serve' in another terminal, then rerun."; exit 1
       fi
       if ! ollama list | awk 'NR>1 {print $1}' | grep -qx -e "$value" -e "$value:latest"; then

@@ -15,6 +15,7 @@ never the whole corpus. Output is constrained to a JSON schema and validated:
 from __future__ import annotations
 
 import json
+import os
 
 from ..storage.provenance import now_iso
 
@@ -88,8 +89,17 @@ def resolve_model(cfg, name: str | None = None) -> dict:
     return out
 
 
-def installed_ollama_models(base_url: str = "http://localhost:11434") -> set[str] | None:
+def default_ollama_url() -> str:
+    """The local Ollama server: OLLAMA_HOST when set (as the ollama command reads it), else localhost:11434."""
+    host = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/")
+    if not host:
+        return "http://localhost:11434"
+    return host if "://" in host else f"http://{host}"
+
+
+def installed_ollama_models(base_url: str | None = None) -> set[str] | None:
     import requests
+    base_url = base_url or default_ollama_url()
     try:
         tags = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=5).json()
     except (requests.RequestException, ValueError):
@@ -117,7 +127,7 @@ class LLMClient:
         self.requests = requests
         self.provider = cfg.get("provider", "ollama")
         self.model = cfg.get("model", "qwen2.5-coder:7b")
-        self.base_url = (cfg.get("base_url") or ("http://localhost:11434" if self.provider == "ollama"
+        self.base_url = (cfg.get("base_url") or (default_ollama_url() if self.provider == "ollama"
                                                   else "http://localhost:8080")).rstrip("/")
         self.timeout = int(cfg.get("timeout_seconds", 300))
         self.max_tokens = int(cfg.get("max_tokens", 1500))

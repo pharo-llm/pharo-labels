@@ -11,3 +11,7 @@ results/.snapshot_staging/
 oar-runs/
 pharo-labels.*.out
 pharo-labels.*.err
+# cluster runs (job.fir.sh)
+fir-runs/
+pharo-labels.*.log
+.snapshot_download
