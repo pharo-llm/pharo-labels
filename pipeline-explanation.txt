@@ -1,0 +1,90 @@
+PHAROTASKMINER — PIPELINE EXPLANATION
+======================================
+
+
+STEP 1 — Mining (1-mining.sh): find real Pharo code
+-----------------------------------------------------
+
+Starts with ~20,000 GitHub candidates (found by searching topics, language tags, org names,
+Pharo-related keywords). Most of those aren't real Pharo projects. A quality filter drops
+the obvious noise using 6 simple criteria:
+
+  - Has Tonel or FileTree source files     → Eliminates repos that just mention Pharo in a README
+  - Not coursework/tutorial/kata           → Removes homework, Advent of Code, classroom stuff
+  - >= 10 commits                          → Removes one-off uploads
+  - >= 10 Pharo source files               → Removes toys
+  - Has test classes                       → Removes untested throwaway code
+  - >= 2 contributors, or >= 1 star,
+    or >= 1 fork                           → Removes purely personal experiments
+
+Stars are NOT a threshold — half of Pharo repos have zero stars, so using a star cutoff
+would kill most of the ecosystem.
+
+This leaves ~1,585 repos (from ~20,000). Those get cloned, parsed method by method, and
+rule-labeled for operations.
+
+
+STEP 1-2 — Filtering (1-2-filtering.sh): build the study corpus
+----------------------------------------------------------------
+
+From the 1,585 mined repos, this step picks at most 150 that are worth studying and
+benchmarking. It applies 13 stricter criteria, one by one — no combined score, each is a
+hard threshold:
+
+  #   Criterion                                              Repos removed
+  --  -----------------------------------------------------  -------------
+  1   Recognised licence                                     570
+  2   >= 2 contributors                                      229
+  3   >= 50 commits                                          249
+  4   >= 180 days between creation and last push             68
+  5   Pushed in the last 5 years                             94
+  6   Has a Metacello baseline (BaselineOf... class)         8
+  7   Tonel format (not old FileTree)                        39
+  8   >= 200 non-test methods                                92
+  9   <= 20,000 methods (removes image dumps)                2
+  10  >= 20 test methods                                     24
+  11  >= 10% of methods are tests                            51
+  12  <= 10% methods duplicated from another repo            18
+  13  <= 1% methods that fail to parse                       2
+
+135 repos pass — under the 150 limit, so all are kept. If more than 150 passed, a
+diversity-based greedy selection would pick the most representative ones (by domain, size,
+kind) rather than the most popular ones.
+
+From this corpus, a 300-method sample is drawn for AI labelling in step 2.
+
+
+THE OVERALL FLOW
+----------------
+
+  ~20,000 GitHub candidates
+      |
+      |  6 quality criteria (is it real Pharo?)
+      v
+  ~1,585 mined repos  →  cloned, parsed, rule-labeled
+      |
+      |  13 study criteria (is it worth benchmarking?)
+      v
+  135 repos = study corpus
+      |
+      |  sample 300 methods
+      v
+  AI labelling  →  taxonomy  →  statistics  →  benchmark tasks
+
+
+KEY DESIGN DECISION
+-------------------
+
+Two separate filters for two separate questions:
+  1. "Is this real Pharo code?"          (Step 1  — 6 criteria)
+  2. "Is this good enough to benchmark?" (Step 1-2 — 13 criteria)
+
+
+The Promises and Perils of Mining GitHub (MSR 2014)
+SWE-bench (ICLR 2024) + Multi-SWE-bench Zan et al. (2025)
+DéjàVu: A Map of Code Duplicates on GitHub (OOPSLA 2017)
+The Adverse Effects of Code Duplication in ML Models of Code (Onward! 2019)
+Diversity in Software Engineering Research (ESEC/FSE 2013)
+CodeSearchNet (Husain et al. 2019), CoderEval (Yu et al. ICSE 2024), RepoCoder (Zhang et al. EMNLP 2023), SWE-Bench++ (2025)
+
+
