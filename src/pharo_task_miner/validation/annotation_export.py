@@ -72,6 +72,45 @@ def select_sample(db: Database, size: int, seed: int, max_per_repo: int, include
     return chosen
 
 
+def select_proportional(db: Database, size: int, seed: int, repo_ids: set[int] | None = None) -> list[dict]:
+    """Stratified random sample with the repository as stratum and proportional allocation
+    (Cochran 1977, ch. 5): every repository contributes the same fraction of its methods, so the
+    sample is self-weighting and a proportion measured on it estimates the whole corpus directly.
+    Methods copied from another repository are excluded; only the latest snapshot is used.
+    Repository shares are rounded with the largest remainder method, so exactly ``size`` methods
+    are drawn (or every method when the corpus is smaller). Same row shape as ``select_sample``."""
+    rows = db.query(
+        "SELECT m.method_id, m.repo_id, m.is_test, ms.status FROM methods m"
+        " JOIN method_status ms ON ms.method_id=m.method_id AND ms.label_source='rule_based'"
+        " WHERE m.parse_status='ok' AND m.duplicate_of_method_id IS NULL"
+        " AND m.snapshot_id IN (SELECT MAX(snapshot_id) FROM repository_snapshots GROUP BY repo_id)"
+        " ORDER BY m.repo_id, m.method_id")
+    by_repo = defaultdict(list)
+    for r in rows:
+        if repo_ids is None or r["repo_id"] in repo_ids:
+            by_repo[r["repo_id"]].append(dict(r))
+    total = sum(len(v) for v in by_repo.values())
+    if total == 0 or size <= 0:
+        return []
+    size = min(size, total)
+    exact = {k: size * len(v) / total for k, v in by_repo.items()}
+    alloc = {k: int(x) for k, x in exact.items()}
+    for k in sorted(exact, key=lambda k: (-(exact[k] - alloc[k]), k))[:size - sum(alloc.values())]:
+        alloc[k] += 1
+    labels = defaultdict(set)
+    for r in db.query("SELECT method_id, operation_id FROM method_labels WHERE label_source='rule_based'"):
+        labels[r["method_id"]].add(r["operation_id"])
+    parent = {r["category_id"]: r["parent_id"] for r in db.query("SELECT category_id, parent_id FROM taxonomy_categories")}
+    rng = random.Random(seed)
+    chosen = []
+    for k in sorted(by_repo):
+        for c in rng.sample(by_repo[k], alloc[k]):
+            l2 = sorted({parent.get(o) for o in labels[c["method_id"]] if parent.get(o)})
+            c["stratum"] = c["status"] if c["status"] != "classified" else (l2[0] if l2 else "classified")
+            chosen.append(c)
+    return chosen
+
+
 def select_repositories(db: Database, repo_ids: set[int]) -> list[dict]:
     """Every parsed method of the given repositories (latest snapshot), except the methods copied
     from another repository. Same row shape as ``select_sample``."""

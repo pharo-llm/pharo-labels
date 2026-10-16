@@ -77,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--label-repositories", type=int, dest="label_repositories",
                    help="Label every method of N repositories of the study corpus instead of a sample of methods (0 = sample)")
+    p.add_argument("--sample-strategy", choices=["category_balanced", "proportional"], dest="sample_strategy",
+                   help="category_balanced: the same number of methods per operation category, at most "
+                        "max_per_repository per repository; proportional: every repository of the study corpus "
+                        "in proportion to its size (represents the corpus)")
 
     cmd("import-annotations", "Import annotator decisions, compute agreement, import adjudicated labels and feedback")
 

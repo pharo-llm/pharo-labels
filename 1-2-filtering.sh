@@ -35,6 +35,12 @@ MAX_REPOSITORIES="${MAX_REPOSITORIES:-}"
 # (not deleted).
 LABEL_REPOSITORIES="${LABEL_REPOSITORIES:-}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-}"
+# How the SAMPLE_SIZE methods are drawn (only when LABEL_REPOSITORIES=0):
+#   proportional       every repository of the study corpus, in proportion to its number of
+#                      methods: the sample represents the whole corpus (Cochran 1977)
+#   category_balanced  the same number per operation category, at most 15 per repository
+# Empty = validation.sample_strategy in config.yaml (category_balanced).
+SAMPLE_STRATEGY="${SAMPLE_STRATEGY:-}"
 
 # The thresholds themselves (licence, contributors, commits, tests, duplication, ...) are in
 # config.yaml under corpus_filter. Each setting keeps the value above unless a variable of the
@@ -57,6 +63,7 @@ run_logged "$LOG" "$MINER" filter-corpus ${args[@]+"${args[@]}"} || { echo "Stop
 size_args=()
 [ -n "$SAMPLE_SIZE" ] && size_args+=(--size "$SAMPLE_SIZE")
 [ -n "$LABEL_REPOSITORIES" ] && size_args+=(--label-repositories "$LABEL_REPOSITORIES")
+[ -n "$SAMPLE_STRATEGY" ] && size_args+=(--sample-strategy "$SAMPLE_STRATEGY")
 run_logged "$LOG" "$MINER" export-annotations ${size_args[@]+"${size_args[@]}"} || { echo "Stopped: see the message above (log: $LOG)"; exit 1; }
 echo
 echo "Study corpus: results/reports/corpus_filter.md   (every repository and why: results/tables/corpus_filter.csv)"

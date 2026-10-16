@@ -29,12 +29,23 @@ SNAPSHOT_VERSION="${SNAPSHOT_VERSION:-}"
 # yes = after mining, upload the results to Hugging Face so the next run (or a colleague) can
 #       skip mining. Needs a Hugging Face token with write access (asked once, kept in .env).
 PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-yes}"
+
+# no = never mine or clone from GitHub: use the local results or the Hugging Face snapshot,
+#      and stop with an error when neither can be used (job.oar.sh sets this).
+ALLOW_GITHUB_MINING="${ALLOW_GITHUB_MINING:-yes}"
 # Each setting keeps the value above unless a variable of the same name is already set in the
 # environment (this is how job.oar.sh configures a cluster run).
 # ===========================================================================================
 
 source "$(dirname "$0")/scripts/_common.sh"
 LOG=results/run.log
+
+no_github() {
+  echo "ERROR: $1"
+  echo "ALLOW_GITHUB_MINING=no: nothing is mined or cloned from GitHub. Make the Hugging Face"
+  echo "snapshot usable (./snapshot.sh info) or set ALLOW_GITHUB_MINING=yes to mine."
+  exit 1
+}
 
 finish_ok() {
   echo "Next: ./1-2-filtering.sh   (keeps the repositories worth labelling and benchmarking, 150 at most)"
@@ -78,6 +89,7 @@ if [ "$USE_SNAPSHOT" = "auto" ]; then
     finish_ok
   fi
   if [ "$state" = "selected" ]; then
+    [ "$ALLOW_GITHUB_MINING" = "no" ] && no_github "the selected repositories would have to be cloned from GitHub."
     echo "Cloning and parsing the selected repositories (clones that already exist are reused) …"
     for stage in clone parse analyze classify-domains discover-operations export-annotations; do
       run_logged "$LOG" "$MINER" "$stage" || { echo "Failed at '$stage'. Rerun ./1-mining.sh to continue; see $LOG"; exit 1; }
@@ -88,6 +100,7 @@ if [ "$USE_SNAPSHOT" = "auto" ]; then
   [ "$state" = "partial" ] && echo "An interrupted mining run was found in results/: resuming it."
 fi
 
+[ "$ALLOW_GITHUB_MINING" = "no" ] && no_github "no usable results (state: $state): GitHub would have to be mined."
 ask_secret GITHUB_TOKEN "GitHub token (https://github.com/settings/tokens, read-only public access is enough)"
 status=0
 run_logged "$LOG" "$MINER" pipeline "$@" || status=$?

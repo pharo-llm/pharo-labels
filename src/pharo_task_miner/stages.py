@@ -650,7 +650,7 @@ def _semantic_methods(cfg, db, tax, run, limit, model=None):
 # --------------------------------------------------------------------------- validation
 def export_annotations(cfg, args):
     from .sampling.corpus_filter import repositories_to_label
-    from .validation.annotation_export import export, select_repositories, select_sample
+    from .validation.annotation_export import export, select_proportional, select_repositories, select_sample
     vcfg = cfg["validation"]
     with open_db(cfg) as db, tracked_run(db, "export-annotations", cfg, vars(args)) as run:
         tax_rows = [dict(r) for r in db.query("SELECT category_id, parent_id, level, definition FROM taxonomy_categories"
@@ -658,7 +658,9 @@ def export_annotations(cfg, args):
         size = args.size or vcfg["annotation_sample_size"]
         n_repos = getattr(args, "label_repositories", None)
         n_repos = int(vcfg.get("label_repositories") or 0) if n_repos is None else n_repos
-        explicit = bool(args.size) or getattr(args, "label_repositories", None) is not None
+        strategy = getattr(args, "sample_strategy", None) or vcfg.get("sample_strategy") or "category_balanced"
+        explicit = bool(args.size) or getattr(args, "label_repositories", None) is not None \
+            or getattr(args, "sample_strategy", None) is not None
         study, chosen, repos = study_repo_ids(db), None, []
         if n_repos and study is None and not explicit:
             n_repos = 0  # mining, before the study corpus exists: a first sample, replaced by ./1-2-filtering.sh
@@ -669,6 +671,9 @@ def export_annotations(cfg, args):
                                    "(`pharo-miner filter-corpus`) first.")
             repos = repositories_to_label(db, n_repos, cfg["corpus_filter"])
             chosen = select_repositories(db, {r["repo_id"] for r in repos})
+        elif strategy == "proportional":
+            # a sample that represents the whole study corpus: every repository, in proportion to its size
+            chosen = select_proportional(db, size, vcfg["random_seed"], repo_ids=study)
         existing = cfg.validation_dir / "annotation_sample.csv"
         if explicit and existing.exists():
             with existing.open(encoding="utf-8", newline="") as f:
@@ -689,6 +694,22 @@ def export_annotations(cfg, args):
             res["repositories"] = len(repos)
             log(f"Every method of {len(repos)} repositories is to be labelled: {len(chosen)} methods "
                 f"(list: {cfg.validation_dir / 'labelled_repositories.csv'}).")
+        elif strategy == "proportional" and not n_repos and res["status"] == "exported":
+            # the allocation, for the paper: each repository's methods in the corpus and in the sample
+            sampled = Counter(c["repo_id"] for c in chosen)
+            in_corpus = Counter(r["repo_id"] for r in db.query(
+                "SELECT m.repo_id FROM methods m"
+                " JOIN method_status ms ON ms.method_id=m.method_id AND ms.label_source='rule_based'"
+                " WHERE m.parse_status='ok' AND m.duplicate_of_method_id IS NULL"
+                " AND m.snapshot_id IN (SELECT MAX(snapshot_id) FROM repository_snapshots GROUP BY repo_id)")
+                if study is None or r["repo_id"] in study)
+            names = {r["repo_id"]: r["full_name"] for r in db.query("SELECT repo_id, full_name FROM repositories")}
+            write_csv(cfg.validation_dir / "sample_allocation.csv",
+                      [{"repository": names[k], "methods_in_corpus": n, "methods_sampled": sampled[k]}
+                       for k, n in sorted(in_corpus.items(), key=lambda kv: -kv[1])])
+            res["repositories"] = len(sampled)
+            log(f"Proportional sample: {len(chosen)} methods from {len(sampled)} repositories "
+                f"(per repository: {cfg.validation_dir / 'sample_allocation.csv'}).")
         run.counts.update({k: v for k, v in res.items() if k != "strata"})
         log(json.dumps(res, indent=1))
 
