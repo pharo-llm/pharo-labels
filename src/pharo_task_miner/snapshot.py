@@ -92,7 +92,7 @@ def local_state(cfg) -> str:
     but did not reach the selection) or ``none``."""
     from .sampling.repository_filters import selection_digest
     r = Roots.from_cfg(cfg)
-    has_db = r.database.exists() and r.database.stat().st_size > 0
+    has_db = _has_repositories(r.database)
     has_sample = has_db and _analysed_after_selection(r.database)
     selection = r.data / "processed" / "sample.json"
     if has_db and selection.exists():
@@ -108,6 +108,18 @@ def local_state(cfg) -> str:
     if has_db or (r.data / "raw" / "repositories.jsonl").exists():
         return "partial"
     return "none"
+
+
+def _has_repositories(db_path: Path) -> bool:
+    """True when the database holds mined repositories: any stage (``label``, ``report``) creates
+    the empty schema, which must not count as a started mining run."""
+    if not db_path.exists() or db_path.stat().st_size == 0:
+        return False
+    try:
+        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as c:
+            return c.execute("SELECT 1 FROM repositories LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return False
 
 
 def _analysed_after_selection(db_path: Path) -> bool:

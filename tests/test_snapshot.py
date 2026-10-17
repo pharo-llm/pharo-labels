@@ -93,7 +93,11 @@ class SnapshotTest(unittest.TestCase):
         return staging, man
 
     def test_states(self):
-        self.assertEqual(snap.local_state(load_config(root=self.tmp)), "none")
+        empty = load_config(root=self.tmp)
+        self.assertEqual(snap.local_state(empty), "none")
+        from pharo_task_miner.storage.database import Database
+        Database(empty.database_path).close()   # e.g. `label` run before any mining
+        self.assertEqual(snap.local_state(empty), "none")
         cfg = make_project(self.tmp / "p", with_sample=False)
         self.assertEqual(snap.local_state(cfg), "partial")
         mark_analysed(cfg)
