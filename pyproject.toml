@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pharo-task-miner"
 version = "0.1.0"
-description = "Empirical discovery of programming operations, language features and APIs in real Pharo repositories"
+description = "Mine Pharo repositories and build a saturated, expert-validated taxonomy of the programming tasks of their methods"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,9 +13,11 @@ dependencies = [
     "matplotlib>=3.9,<4",
     "numpy>=1.26",
     "pyyaml>=6.0",
-    "anthropic>=1.12,<2",
     "huggingface_hub>=1.0",
 ]
+
+[project.optional-dependencies]
+hf = ["torch>=2.4", "transformers>=4.45", "peft>=0.13", "accelerate>=1.0"]   # hf:<repo> models (e.g. the -PT adapters)
 
 [project.scripts]
 pharo-miner = "pharo_task_miner.cli:main"

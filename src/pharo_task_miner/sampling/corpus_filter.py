@@ -1,13 +1,12 @@
-"""Study corpus: the repositories that AI labelling, the results and the benchmark are based on.
+"""Filter 2, the study corpus: the repositories the labelling is based on.
 
 Mining keeps every repository that is real Pharo code (about 1,600). Most of them are small,
-inactive or personal, so labelling and benchmark seeds drawn from all of them describe GitHub
-more than they describe Pharo software engineering. This module keeps the repositories that
-show the practices of an engineered project and whose code can serve a benchmark that asks a
-model to write and to fix Pharo code: redistributable, loadable, tested, original.
+inactive or personal, so methods drawn from all of them describe GitHub more than they describe
+Pharo software engineering. This module keeps the repositories that show the practices of an
+engineered project: redistributable, loadable, tested, original.
 
-Every criterion is a separate measured threshold with its source in the literature
-(docs/1-2-filtering.md). There is no combined score. Each repository gets every criterion it
+Every criterion is a separate measured threshold with its source in the literature (the
+``CRITERIA`` table below). There is no combined score. Each repository gets every criterion it
 fails, and the first one in ``CRITERIA`` order is its funnel reason. Only when more
 repositories pass than ``max_repositories`` is a choice made, and it is made for diversity
 (greedy coverage of domain, size and kind), never for popularity.
@@ -211,9 +210,8 @@ def write_report(path, cfg, funnel: list[dict], decisions: list[dict], info: dic
     f = cfg["corpus_filter"]
     inc = sorted((d for d in decisions if d["decision"] == "included"), key=lambda d: d["full_name"].lower())
     L = ["# Study corpus\n",
-         f"{info['selected']} of {info['mined']} mined repositories form the study corpus: the repositories that AI labelling, "
-         "the results and the benchmark are based on. Method and literature: `docs/1-2-filtering.md`. Thresholds: "
-         "`corpus_filter` in `config.yaml`.\n",
+         f"{info['selected']} of {info['mined']} mined repositories form the study corpus: the repositories the labelling "
+         "is based on. Thresholds: `corpus_filter` in `config.yaml`; sources: the table below.\n",
          f"Mining date used for the last-push criterion: {mined or 'unknown'}.\n",
          "## Filtering funnel\n",
          "The criteria are applied in this order. *Fails alone* counts every mined repository that fails the criterion, "

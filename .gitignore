@@ -7,12 +7,3 @@ __pycache__/
 results/
 .snapshot_download/
 results/.snapshot_staging/
-# cluster runs (job.oar.sh)
-oar-runs/
-pharo-labels.*.out
-pharo-labels.*.err
-# cluster runs (job.fir.sh)
-fir-runs/
-pharo-labels.*.log
-.snapshot_download
-.ollama-models/

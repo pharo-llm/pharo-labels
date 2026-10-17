@@ -88,3 +88,34 @@ Diversity in Software Engineering Research (ESEC/FSE 2013)
 CodeSearchNet (Husain et al. 2019), CoderEval (Yu et al. ICSE 2024), RepoCoder (Zhang et al. EMNLP 2023), SWE-Bench++ (2025)
 
 
+
+
+
+
+
+- population / stat / confiance de label Methods
+
+- take new catgeyr from the 135 and se if we got a new categry. (loop)
+
+- labelling with LLM / agent / user 
+
+- saturation
+
+- validation externe with an expert
+
+- benchmakr for the majority of the people and not the minority.
+
+
+------
+- so what ? / bien motivee /  tache de maintenance / taches d'automatisation 
+
+- impact de prefix cohesion. ( code. completion as a use case )
+
+- code completion iis a use case.
+
+- naming convention.
+
+
+
+- which families are the responsible for the dropping of the prefix cohesion 
+- check spec ( 2 -9 )

@@ -1,0 +1,268 @@
+"""results/REPORT.md: the whole study from zero, one section per step.
+
+1. GitHub mining and filter 1 (is this real Pharo code?)
+2. Filter 2 (the study corpus) and the method population
+3. Sample size and labelling, with statistics
+4. The saturation loop
+5. The expert-validation export
+"""
+from __future__ import annotations
+
+from collections import Counter, defaultdict
+import json
+from pathlib import Path
+
+from ..storage.database import Database
+
+QUALITY_ORDER = [
+    ("quality: no Pharo package source (Tonel/FileTree)", "Has Tonel or FileTree source files"),
+    ("quality: coursework, tutorial or programming puzzle", "Not coursework, tutorial or kata"),
+    ("quality: fewer than", "commits"),
+    ("quality: fewer than", "Pharo source files"),
+    ("quality: no tests", "Has test classes"),
+    ("quality: single author, no star, no fork", "≥ 2 contributors, or ≥ 1 star, or ≥ 1 fork"),
+]
+
+
+def _n(x) -> str:
+    return f"{x:,}" if isinstance(x, int) else str(x)
+
+
+def _pct(x) -> str:
+    return f"{x:.1%}"
+
+
+def mining_section(cfg, db: Database) -> tuple[list[str], dict]:
+    raw = cfg.data_dir / "raw" / "search_manifest.json"
+    L, nums = [], {}
+    total = db.scalar("SELECT COUNT(*) FROM repositories")
+    nums["discovered"] = total
+    L += ["## 1. GitHub mining and filter 1: is this real Pharo code?\n"]
+    if raw.exists():
+        man = json.loads(raw.read_text())
+        per = defaultdict(lambda: [0, 0])
+        for t in man.get("tasks", {}).values():
+            per[t["strategy"]][0] += 1
+            per[t["strategy"]][1] += t.get("retrieved") or 0
+        L += [f"GitHub was searched with {sum(v[0] for v in per.values())} queries (search started "
+              f"{man.get('created_at', '')[:10]}). A repository found by several queries counts once.\n",
+              "| Search strategy | Queries | Results (with overlaps) |", "|---|---:|---:|"]
+        L += [f"| {k} | {_n(v[0])} | {_n(v[1])} |" for k, v in sorted(per.items())]
+        L.append("")
+    status = dict(db.query("SELECT pharo_status, COUNT(*) FROM repositories GROUP BY 1"))
+    pharo = status.get("confirmed_pharo", 0) + status.get("probable_pharo", 0)
+    L += [f"**{_n(total)} unique candidate repositories.** Each was checked for Pharo evidence "
+          "(Tonel/FileTree files, `BaselineOf`, `.project`, Pharo CI) by reading its file tree:\n",
+          "| Verification | Repositories |", "|---|---:|"]
+    for k in ("confirmed_pharo", "probable_pharo", "uncertain", "non_pharo"):
+        L.append(f"| {k} | {_n(status.get(k, 0))} |")
+    L.append("")
+    run = db.scalar("SELECT run_id FROM analysis_runs WHERE stage='sample' AND status='completed' ORDER BY started_at DESC LIMIT 1")
+    reasons = Counter(dict(db.query("SELECT reason, COUNT(*) FROM selection_decisions WHERE run_id=? GROUP BY 1", (run,)))) if run else Counter()
+    included = db.scalar("SELECT COUNT(*) FROM selection_decisions WHERE run_id=? AND decision='included'", (run,)) if run else 0
+    # reasons recorded by sampling.repository_filters.eligibility before the quality criteria
+    dup = sum(v for k, v in reasons.items() if not k.startswith(("quality:", "pharo_status", "selected by"))
+              and (" of repository " in k or k.startswith(("fork excluded", "archived repository"))))
+    q = cfg["repositories"]["quality"]
+    remaining = pharo - dup
+    L += ["Filter 1 keeps the Pharo repositories with real, maintained code. The criteria are applied in this "
+          "order; each repository is counted at the first one it fails. Stars are not a criterion: half of the "
+          "Pharo repositories have none.\n",
+          "| # | Criterion | Removed | Remaining |", "|---|---|---:|---:|",
+          f"| | Pharo verified (confirmed or probable) | {_n(total - pharo)} | {_n(pharo)} |",
+          f"| | Not a fork, mirror or duplicate of another candidate | {_n(dup)} | {_n(remaining)} |"]
+    labels = {"commits": f"≥ {q.get('min_commits')} commits", "Pharo source files": f"≥ {q.get('min_pharo_source_files')} Pharo source files"}
+    i = 0
+    for prefix, label in QUALITY_ORDER:
+        n = sum(v for k, v in reasons.items() if k.startswith(prefix) and (prefix != "quality: fewer than" or k.endswith(label)))
+        remaining -= n
+        i += 1
+        L.append(f"| {i} | {labels.get(label, label)} | {_n(n)} | {_n(remaining)} |")
+    L.append("")
+    snaps = dict(db.query("SELECT clone_status, COUNT(*) FROM repository_snapshots GROUP BY 1"))
+    parsed = db.scalar("SELECT COUNT(DISTINCT repo_id) FROM repository_snapshots WHERE n_methods > 0")
+    methods = db.scalar("SELECT SUM(n_methods) FROM repository_snapshots WHERE n_methods > 0 AND snapshot_id IN "
+                        "(SELECT MAX(snapshot_id) FROM repository_snapshots GROUP BY repo_id)")
+    nums.update({"pharo": pharo, "filter1": included, "parsed": parsed, "methods_mined": methods})
+    L += [f"**{_n(included)} repositories pass filter 1.** They were cloned ({_n(snaps.get('cloned', 0))} cloned, "
+          f"{_n(snaps.get('failed', 0))} failed) and every method was parsed: **{_n(parsed)} repositories with "
+          f"{_n(methods or 0)} methods**. Every decision and its reason: `results/tables/repository_selection.csv`.\n"]
+    return L, nums
+
+
+def corpus_section(cfg, plan: dict | None) -> tuple[list[str], dict]:
+    p = cfg.data_dir / "processed" / "corpus.json"
+    if not p.exists():
+        return ["## 2. Filter 2: the study corpus\n", "Not run yet: `./run.sh filter`.\n"], {}
+    c = json.loads(p.read_text())
+    L = ["## 2. Filter 2: the study corpus\n",
+         f"Filter 2 keeps the repositories that are engineered projects: licensed, developed by several people over "
+         f"time, loadable in a current Pharo, tested and original. Each criterion is a separate threshold (no global "
+         f"score), applied in this order (mining date for the last-push criterion: {c.get('mining_date') or 'unknown'}):\n",
+         "| # | Criterion | Removed | Remaining | Fails alone |", "|---|---|---:|---:|---:|"]
+    for i, r in enumerate(c["funnel"], 1):
+        L.append(f"| {i} | {r['requirement']} | {_n(r['removed'])} | {_n(r['remaining'])} | {_n(r['fail_alone'])} |")
+    L.append(f"\n*Fails alone* counts every repository that fails the criterion, whatever the others say.\n")
+    selected = len(c["selected"]) if isinstance(c["selected"], list) else c["selected"]
+    L.append(f"**{selected} repositories form the study corpus**"
+             + (f" (chosen for diversity among {c['passing']} that pass every criterion)." if c.get("capped")
+                else f" (all {c['passing']} that pass every criterion; the maximum is {c['max_repositories']}).")
+             + " Their list, domains and owners: `results/reports/corpus_filter.md`; every repository and the criteria "
+               "it fails: `results/tables/corpus_filter.csv`.\n")
+    nums = {"filter2": selected}
+    if plan:
+        pop = plan["population"]
+        nums["population"] = pop["methods"]
+        L.append(f"The **population** to label is every method of these {pop['repositories']} repositories that parses, "
+                 f"is not a copy of a method of another repository, and is in the latest snapshot: "
+                 f"**{_n(pop['methods'])} methods** ({_n(pop['test_methods'])} of them in tests"
+                 + ("" if pop["include_tests"] else ", excluded by `labelling.include_tests`") + ").\n")
+    return L, nums
+
+
+def labelling_sections(cfg, plan: dict, summ: dict) -> list[str]:
+    ss = plan["sample_size"]
+    N = plan["population"]["methods"]
+    L = ["## 3. Sample size and labelling\n",
+         "**Sample size.** Cochran's formula for a proportion with the finite population correction "
+         "(Cochran 1977, eq. 4.2-4.3):\n",
+         "```", "n0 = z² · p(1−p) / e²        n = n0 / (1 + (n0 − 1) / N)", "```\n",
+         f"With confidence {ss['confidence']:.0%} (z = {ss['z']}), margin of error e = ±{ss['margin_of_error']:.1%}, "
+         f"p = {ss['proportion']} (the most conservative value) and N = {_n(N)}: n0 = {ss['n0']}, "
+         f"**n = {_n(ss['n'])}** methods"
+         + (f" (a sample size of {_n(plan['initial_sample_size'])} was set by hand: margin of error "
+            f"±{plan['initial_margin']:.1%})" if plan["initial_sample_size"] != ss["n"] else "") + ".\n",
+         "For comparison, other choices for the same population:\n",
+         "| Confidence | Margin | Sample size |", "|---|---:|---:|"]
+    for row in plan["alternatives"]:
+        L.append(f"| {row['confidence']:.0%} | ±{row['margin_of_error']:.0%} | {_n(row['n'])} |")
+    L += ["",
+          "**Draw.** Stratified random sampling, the repository as stratum, proportional allocation (Cochran 1977, "
+          "ch. 5): every repository contributes in proportion to its number of methods, so the sample represents the "
+          f"corpus without weights. Seed {plan['settings']['random_seed']}.\n",
+          f"**Model.** `{plan['model']['name']}` ({plan['model']['description'].get('backend')}, greedy decoding). "
+          "The model completes a few-shot prompt: for each method it writes a one-sentence summary, then a short, "
+          "general name for the programming task the method performs (open coding). Each method is coded on its "
+          "own: the prompt does not list the categories found so far, because small models copy such a list even "
+          "when nothing in it fits. Twelve worked examples carry "
+          f"{len(summ['seed_categories'])} seed categories ({', '.join(summ['seed_categories'])}).\n",
+          "**Codebook.** A new name joins an existing category when it is equal after normalisation (case, plural, "
+          f"punctuation), a spelling variant (character ratio ≥ {plan['settings']['merge_similarity']}), or"
+          + (f" the same meaning: cosine similarity ≥ {plan['settings']['semantic_threshold']} between the embeddings "
+             f"of the two names by `{plan['settings']['embedding_model']}`, a 45 MB sentence-embedding model (every "
+             "such merge is listed with its similarity in `codebook.json` and shown to the experts)."
+             if plan['settings'].get('embedding_model') else " (merging by meaning was off).")
+          + f" At the end of each round, a name becomes a category once at least {plan['settings']['min_support']} "
+          f"methods and at least {plan['settings'].get('min_share', 0):.1%} of all methods labelled so far have it; until "
+          "then it is a *candidate*, shown to the experts but not in the taxonomy. The share is what makes saturation "
+          "reachable with a small model, which gives a one-off name to many methods, and it gives saturation a "
+          f"precise meaning: the taxonomy aims at every task with a prevalence of at least "
+          f"{plan['settings'].get('min_share', 0):.1%}; such a task stays unseen in n random methods with probability "
+          "(1 − p)ⁿ.\n",
+          "**Statistics of the labelling.**\n", "| | |", "|---|---:|",
+          f"| Methods labelled (initial sample + saturation rounds) | {_n(summ['methods_labelled'])} |",
+          f"| of which in the initial sample | {_n(summ['initial_sample'])} |",
+          f"| Repositories they come from | {summ['repositories_covered']} |",
+          f"| Test methods among them | {_n(summ['labelled_tests'])} ({_pct(summ['labelled_tests'] / summ['methods_labelled'])}) |",
+          f"| Model answers without a usable task name | {_n(summ['no_answer'])} |",
+          f"| Methods whose task name stayed too rare to be a category | {_n(summ['rare_names'])} |",
+          f"| Categories in the taxonomy | {summ['categories']} |",
+          f"| of which still at ≥ {plan['settings'].get('min_share', 0):.1%} of the labelled methods at the end | "
+          f"{summ.get('categories_at_min_share', '–')} |",
+          f"| Candidate names (below the support threshold) | {summ['candidates']} |",
+          f"| Seed categories never used | {', '.join(summ['unused_seed_categories']) or 'none'} |",
+          f"| Margin of error with all labelled methods (95%) | ±{summ['margin_of_error_all_labelled']:.1%} |",
+          f"| Model time per method | {summ['seconds_per_method']} s |"]
+    a = summ.get("agreement")
+    if a:
+        L.append(f"| Same category from the check model `{a['model']}`, coding independently ({a['items_with_a_category']} methods) | "
+                 f"{_pct(a['agreement'])} (Cohen's κ = {a['cohen_kappa']}) |")
+    L += ["", "**Task categories.** Share of the corpus estimated from all labelled methods, 95% Wilson interval "
+          "with the finite population correction, and the estimated number of corpus methods:\n",
+          "| Category | Methods | Share [95% CI] | ≈ methods in corpus | Repositories | Tests | Seed |",
+          "|---|---:|---|---:|---:|---:|:---:|"]
+    for r in summ["taxonomy"]:
+        name = r["category"] if r["in_taxonomy"] else f"*{r['category']}*"
+        if r.get("below_min_share"):
+            name += " †"
+        L.append(f"| {name} | {r['methods']} | {_pct(r['share'])} [{_pct(r['ci_low'])}, {_pct(r['ci_high'])}] | "
+                 f"{_n(r['estimated_methods_in_corpus'])} | {r['repositories']} | {_pct(r['test_share'])} | "
+                 f"{'yes' if r['seed'] else ''} |")
+    low = [r["category"] for r in summ["taxonomy"] if r.get("below_min_share")]
+    if low:
+        L.append(f"\n† {len(low)} categories entered the taxonomy early (in a round where they reached the thresholds) "
+                 f"but are below {plan['settings'].get('min_share', 0):.1%} of all labelled methods at the end; they are "
+                 "flagged for the experts (`below_min_share` in `taxonomy.csv`).")
+    if summ["figures"].get("category_distribution"):
+        L.append("\n![Task categories](figures/category_distribution.png)\n")
+    L += ["## 4. The saturation loop\n",
+          f"After the initial sample, each round draws {plan['settings']['batch_size']} new methods from the methods "
+          "not drawn yet (same proportional allocation), labels them, and counts the categories that appear: a "
+          f"category appears in the round where its name reaches both thresholds. The loop stops when {plan['settings']['patience']} rounds in a row add no "
+          f"category (at most {plan['settings']['max_rounds']} rounds)"
+          + (f". The patience is derived, not chosen: {plan['settings']['patience']} rounds of "
+             f"{plan['settings']['batch_size']} methods cover at least {_n(plan['settings']['quiet_methods_needed'])} "
+             f"methods, the run length in which a task with a prevalence of {plan['settings']['min_share']:.1%} "
+             f"appears with probability {plan['sample_size']['confidence']:.0%} (1 − (1 − p)ᴸ ≥ "
+             f"{plan['sample_size']['confidence']:.0%}).\n"
+             if plan['settings'].get('patience_rule') == 'derived' else ".\n"),
+          "| Round | Methods | Labelled so far | New categories | Categories | Candidates | New names proposed |",
+          "|---:|---:|---:|---|---:|---:|---:|"]
+    for c in summ["curve"]:
+        new = f"{c['new_categories']}" + (f" ({c['new_category_names']})" if c["new_category_names"] else "")
+        L.append(f"| {c['round']}{' (initial)' if c['round'] == 0 else ''} | {c['methods_in_round']} | "
+                 f"{_n(c['methods_total'])} | {new} | {c['categories_total']} | {c['candidates_total']} | "
+                 f"{c['new_names_proposed']} |")
+    stop = plan.get("result", {}).get("stop_reason")
+    L.append("\n" + {"saturated": f"**Saturation reached** after {summ['rounds']} rounds: "
+                                  f"{plan['settings']['patience']} rounds in a row added no category.",
+                     "max_rounds": f"**Saturation not reached** within {plan['settings']['max_rounds']} rounds: "
+                                   "increase `MAX_ROUNDS` (the labels done so far are kept).",
+                     "population_exhausted": "Every method of the corpus was labelled."}.get(stop, "") + "\n")
+    if summ["figures"].get("saturation_curve"):
+        L.append("![Saturation curve](figures/saturation_curve.png)\n")
+    ev = Path(summ["files"]["expert_validation"])
+    L += ["## 5. Expert validation export\n",
+          f"The taxonomy is not final until Pharo experts have reviewed it. Files in "
+          f"`{ev.relative_to(cfg.output_dir)}/` (instructions: its `README.md`):\n",
+          "| File | Content | Experts fill |", "|---|---|---|",
+          f"| `taxonomy_review.csv` | {summ['categories']} categories with share and examples | keep, rename, merge, split, definition |",
+          f"| `method_review.csv` | {plan['settings']['method_review_size']} random labelled methods with source, link, model and check-model label | correct yes/no, correct category |",
+          f"| `candidate_review.csv` | {summ['candidates']} names proposed too rarely | category yes/no, or which category covers it |",
+          "| `examples.md` | every category with three methods and their source code | (reading) |",
+          "", "Every labelled method with its final category: `results/labelling/labels.csv`; every model answer: "
+          "`results/labelling/labels.jsonl`; the codebook: `results/labelling/codebook.json`.\n"]
+    return L
+
+
+def write(cfg, db: Database) -> Path:
+    out = cfg.output_dir / "REPORT.md"
+    ldir = cfg.labelling_dir
+    plan = json.loads((ldir / "plan.json").read_text()) if (ldir / "plan.json").exists() else None
+    summ = json.loads((ldir / "summary.json").read_text()) if (ldir / "summary.json").exists() else None
+    s1, n1 = mining_section(cfg, db)
+    s2, n2 = corpus_section(cfg, plan)
+    nums = {**n1, **n2}
+    funnel = [("GitHub candidate repositories", nums.get("discovered")), ("Verified Pharo", nums.get("pharo")),
+              ("Filter 1 (6 quality criteria)", nums.get("filter1")), ("Cloned and parsed", nums.get("parsed")),
+              ("Filter 2 (13 criteria): study corpus", nums.get("filter2"))]
+    L = ["# Pharo task taxonomy: from GitHub to expert validation\n",
+         "Generated by `./run.sh`. Every number below is computed from `results/`.\n",
+         "| Step | Repositories | Methods |", "|---|---:|---:|"]
+    for name, v in funnel:
+        L.append(f"| {name} | {_n(v) if v is not None else '–'} | "
+                 f"{_n(nums['methods_mined']) if name == 'Cloned and parsed' and nums.get('methods_mined') else (_n(nums['population']) if name.startswith('Filter 2') and nums.get('population') else '')} |")
+    if summ:
+        L += [f"| Initial sample (sample-size calculator) | | {_n(summ['initial_sample'])} |",
+              f"| Labelled after the saturation loop | | {_n(summ['methods_labelled'])} |",
+              f"| **Task categories** (found during the loop; still at ≥ "
+              f"{plan['settings'].get('min_share', 0):.1%} at the end) | | **{summ['categories']}** "
+              f"({summ.get('categories_at_min_share', '–')}) |"]
+    L.append("")
+    L += s1 + s2
+    if plan and summ:
+        L += labelling_sections(cfg, plan, summ)
+    else:
+        L += ["## 3-5. Labelling\n", "Not run yet: `./run.sh label`.\n"]
+    out.write_text("\n".join(L) + "\n", encoding="utf-8")
+    return out

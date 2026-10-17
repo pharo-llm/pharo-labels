@@ -1,10 +1,10 @@
-# PharoTaskMiner configuration. Every key has a documented default in
+# PharoTaskMiner configuration (mining, the two filters, labelling). Every key has a documented default in
 # src/pharo_task_miner/config.py; this file only needs what you change.
 
 project:                             # everything a run produces goes under results/
   data_dir: results/data
   output_dir: results
-  validation_dir: results/validation
+  labelling_dir: results/labelling
   database: results/data/processed/pharo_task_miner.sqlite
 
 github:
@@ -39,9 +39,9 @@ repositories:
   clone_dir: results/data/repositories
   existing_clone_dirs: []            # other folders with owner__repo clones to reuse as-is
   accepted_pharo_status: [confirmed_pharo, probable_pharo]
-  # Which repositories are worth analysing. Each criterion is separate (no combined score) and
+  # FILTER 1 — is this real Pharo code? Each criterion is separate (no combined score) and
   # every excluded repository is listed with the criterion it failed in
-  # results/tables/repository_selection.csv; the counts are in results/reports/repository_selection.md.
+  # results/tables/repository_selection.csv; the counts are in results/REPORT.md (section 1).
   # Stars are deliberately not a threshold: half of the Pharo repositories have none.
   quality:
     require_pharo_source: true       # at least one Tonel/FileTree file: a README that mentions Pharo is not enough
@@ -54,19 +54,19 @@ repositories:
 sampling:
   # all = analyse every repository that passes repositories.quality (about 1,600): no sampling
   # to argue about. The other strategies draw sample_size repositories from them.
-  # Changing anything here or in repositories.quality is picked up by ./1-mining.sh on its own:
-  # it selects again and redoes cloning, parsing and the annotation sample (no GitHub search).
+  # Changing anything here or in repositories.quality is picked up by ./run.sh on its own:
+  # it selects again and redoes cloning and parsing (no GitHub search).
   strategy: all                      # all | random | stratified | diversity | manual
   sample_size: 50
   random_seed: 42
   max_per_owner: 5
   manual_selection_file: null        # CSV with a full_name column (strategy: manual)
 
-corpus_filter:                       # ./1-2-filtering.sh: the study corpus used by steps 2, 3 and 4
-  # Each criterion is a separate threshold with its source in docs/1-2-filtering.md; 0/false = off.
+corpus_filter:                       # FILTER 2 — the study corpus the labelling is based on (./run.sh filter)
+  # Each criterion is a separate threshold (no combined score); 0/false = off.
   # Every repository and the criteria it fails: results/tables/corpus_filter.csv.
   max_repositories: 150              # above this, repositories are chosen for diversity (never for stars)
-  require_license: true              # benchmark tasks are redistributed with their provenance
+  require_license: true              # labelled methods are redistributed with their provenance
   min_contributors: 2                # not a personal repository
   min_commits: 50                    # sustained development
   min_development_days: 180          # between creation and last push
@@ -97,69 +97,27 @@ analysis:
   extract_control_flow: true
   extract_api_usage: true
 
-classification:
-  domains:
-    multi_label: true
-    allow_unknown: true
-    semantic_analysis: false
-  operations:
-    multi_label: true
-    allow_unknown: true
-    semantic_analysis: false         # LLM descriptions for a capped, stratified subset only
-
-semantic:                            # optional local LLM; models are listed in models.yaml
-  models_file: models.yaml
-  use: null                          # null = the default in models.yaml; or a name / any Ollama tag
-  max_methods: 200
-
-validation:
-  require_human_review: true         # taxonomy/statistics/reports wait for reviewed labels
-  label_source: auto                 # reviewed labels to use: auto (human if imported, else LLM) | human | llm
-  label_repositories: 0              # N = step 2 labels every method of N repositories of the study corpus;
-                                     # 0 = it labels a sample of annotation_sample_size methods
-  annotation_sample_size: 300
-  overlap_fraction: 0.3
-  annotators: [annotator_1, annotator_2]
-
-llm_annotation:                      # ./2-ai-labelling.sh sets these from its SETTINGS block
-  models: []                         # annotators: names from models.yaml (or Ollama tags)
-  adjudicator: null                  # optional model that resolves disagreements
-  consensus: majority                # majority | unanimous (when there is no adjudicator)
-  evidence_policy: enforce           # enforce: drop labels without verbatim evidence | record
-  spotcheck_size: 30                 # items exported for a blind human spot-check
+labelling:                           # ./run.sh label — settings at the top of run.sh override these
+  model: pharo-llm/Qwen2.5-Coder-SFT:1.5B   # Ollama tag, or hf:<repo>[@revision], e.g. hf:pharo-llm/Qwen2.5-Coder-1.5B-PT@checkpoint-15400
+  check_model: pharo-llm/Qwen2.5-Coder-SFT:7b   # re-labels the review subset to measure agreement; null = skip
+  confidence: 0.95                   # sample-size calculator (Cochran 1977, with finite population correction)
+  margin_of_error: 0.05
+  proportion: 0.5                    # 0.5 = most conservative
+  sample_size: null                  # null = computed from the three values above
+  batch_size: 50                     # methods drawn per saturation round
+  patience: null                     # rounds in a row without a new category = saturation; null = derived from
+                                     # min_share (12 rounds of 50: a 0.5% task would have shown with 95% probability)
+  max_rounds: 40
+  min_support: 2                     # methods a proposed category needs before it enters the taxonomy
+  min_share: 0.005                   # ... and its share of the labelled methods: the taxonomy covers every task with >= 0.5% prevalence
+  embedding_model: all-minilm        # merges task names with the same meaning (45 MB, Ollama); null = lexical merging only
+  semantic_threshold: 0.78           # cosine similarity above which two names are one category
+  include_tests: true
+  method_review_size: 60             # labelled methods the experts check one by one
   random_seed: 42
 
-benchmark_generation:                # ./4-benchmark.sh; the method is explained in docs/4-benchmark.md
-  pharo_version: "130"               # the image every task is validated in (get.pharo.org/64/<version>)
-  mutalk_version: v3.0.8             # mutation testing framework loaded into that image
-  tasks_per_operation: 3             # seed methods (candidate tasks) per operation
-  min_tests: 4                       # test methods a task needs
-  repeat: 3                          # times the tests must pass on the reference (once in reverse order)
-  min_mutation_score: 0.8            # share of the mutants of the reference the tests must detect
-  min_mutants: 4                     # fewer mutants = solution too small to assess its tests
-  max_seed_similarity: 0.6           # above this the solution counts as a copy of its seed method
-  max_repair_rounds: 3               # times a failing task is sent back with the image's error
-  max_amplification_rounds: 2        # times tests are requested against surviving mutants
-  require_operation: true            # the rule classifier must find the operation in the solution
-  require_independent_solution: true # a second model must solve the task from its statement
-  random_seed: 42
-
-snapshot:                            # results saved on the Hugging Face Hub (./snapshot.sh, used by the step scripts)
+snapshot:                            # results saved on the Hugging Face Hub (./run.sh pull / push)
   repo: pharo-llm/pharo-labels       # dataset id (huggingface.co/datasets/<repo>)
-  revision: main                     # what 1-mining.sh downloads: main = latest, or a tag like snapshot-20261009-153000
+  revision: main                     # what ./run.sh downloads: main = latest, or a tag like snapshot-20261009-153000
   include_api_cache: true            # raw GitHub API responses (e-mails are redacted); enables offline re-runs
   include_clones: false              # cloned third-party repositories (re-downloadable from the recorded commits)
-
-statistics:
-  bootstrap_iterations: 1000
-  random_seed: 42
-  exclude_tests: false
-
-benchmarks:
-  inputs: []                         # e.g. [benchmarks/my_benchmark.json]
-
-output:
-  formats:
-    - jsonl
-    - csv
-    - markdown

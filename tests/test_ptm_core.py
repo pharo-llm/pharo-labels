@@ -1,4 +1,4 @@
-"""Unit tests for PharoTaskMiner core components (parser, readers, rules, statistics, validation)."""
+"""Unit tests for PharoTaskMiner core components (parser, readers, features, detection, repository sampling)."""
 from pathlib import Path
 import sys
 import tempfile
@@ -12,14 +12,10 @@ from pharo_task_miner.extraction.method_extractor import ast_facts, baseline_dep
 from pharo_task_miner.extraction.pharo_parser_bridge import PythonBackend  # noqa: E402
 from pharo_task_miner.analysis.structural_features import compute_features  # noqa: E402
 from pharo_task_miner.analysis.api_usage import RepositoryIndex, resolve_send  # noqa: E402
-from pharo_task_miner.analysis.operation_rules import RuleClassifier  # noqa: E402
 from pharo_task_miner.analysis.domain_classifier import DomainClassifier  # noqa: E402
-from pharo_task_miner.analysis.semantic_classifier import validate_method_output  # noqa: E402
 from pharo_task_miner.discovery.pharo_detection import Listing, verify  # noqa: E402
 from pharo_task_miner.sampling.diversity_sampling import sample  # noqa: E402
 from pharo_task_miner.sampling.repository_filters import is_coursework, quality  # noqa: E402
-from pharo_task_miner.statistics.uncertainty import wilson  # noqa: E402
-from pharo_task_miner.validation.agreement import cohen_kappa, krippendorff_alpha_binary  # noqa: E402
 from pharo_task_miner.config import load_yaml  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,37 +175,6 @@ class FactsAndFeaturesTests(unittest.TestCase):
         self.assertIn(("requires", "B"), kinds)
 
 
-class RuleTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.clf = RuleClassifier(load_yaml(ROOT / "taxonomy" / "initial_categories.yaml"))
-
-    def classify(self, src, is_test=False):
-        ast = parse_method(src)
-        m = {"selector": ast["selector"], "side": "instance", "arguments": ast["arguments"], "source": src, "ast": ast,
-             "is_test": is_test, "line": 1, "class_name": "Foo"}
-        m.update(ast_facts(ast, "Foo", "instance", {}))
-        return self.clf.classify(m, compute_features(m))
-
-    def test_filtering_with_evidence(self):
-        r = self.classify("validNamesFrom: names ^ names select: [ :each | each isNotEmpty ] thenCollect: [ :each | each asLowercase ]")
-        self.assertIn("collection_filtering", r.labels)
-        self.assertIn("collection_transformation", r.labels)
-        self.assertIn("string_conversion_normalization", r.labels)
-        ev = r.labels["collection_filtering"]["evidence"][0]
-        self.assertEqual((ev["selector"], ev["ast_node"]), ("select:thenCollect:", "message_send"))
-
-    def test_statuses(self):
-        self.assertEqual(self.classify("foo ^ 42").status, "insufficient_context")
-        self.assertEqual(self.classify("foo: x ^ x add: 3").status, "ambiguous")
-        self.assertEqual(self.classify("foo: x ^ x frobnicate: 3 with: 4").status, "unknown")
-
-    def test_taxonomy_is_valid(self):
-        from pharo_task_miner.taxonomy.category_manager import load_taxonomy
-        tax = load_taxonomy(ROOT / "taxonomy" / "initial_categories.yaml")
-        self.assertGreater(len([c for c in tax["categories"] if c["level"] == 3]), 40)
-
-
 class DomainAndDetectionTests(unittest.TestCase):
     def test_domain_multilabel_with_evidence_and_no_name_only(self):
         clf = DomainClassifier(load_yaml(ROOT / "taxonomy" / "domains.yaml"))
@@ -235,42 +200,7 @@ class DomainAndDetectionTests(unittest.TestCase):
         self.assertEqual(verify(None, None, {}, ["pharo"], None, "Smalltalk").status, "uncertain")
 
 
-class SemanticValidationTests(unittest.TestCase):
-    def test_rejects_unsupported_labels(self):
-        method = {"source": "foo ^ items select: [:x | x odd]", "message_sends": [{"selector": "select:"}, {"selector": "odd"}],
-                  "referenced_globals": []}
-        out = {"operations": [{"id": "collection_filtering", "evidence": ["select:"]},
-                              {"id": "collection_sorting", "evidence": ["sort:"]},
-                              {"id": "made_up", "evidence": ["select:"]}], "proposed_new_operations": []}
-        acc, rej, _ = validate_method_output(out, method, {"collection_filtering", "collection_sorting"})
-        self.assertEqual([a["id"] for a in acc], ["collection_filtering"])
-        self.assertEqual({r["id"] for r in rej}, {"collection_sorting", "made_up"})
-
-
-class ModelRegistryTests(unittest.TestCase):
-    def test_resolve_named_raw_and_default(self):
-        from pharo_task_miner.analysis.semantic_classifier import resolve_model
-        from pharo_task_miner.config import load_config
-        cfg = load_config(ROOT / "config.yaml")
-        self.assertEqual(resolve_model(cfg)["model"], "qwen2.5-coder:7b")
-        q = resolve_model(cfg, "qwen3-8b")
-        self.assertEqual((q["provider"], q["model"], q["think"]), ("ollama", "qwen3:8b", False))
-        raw = resolve_model(cfg, "mistral:7b")
-        self.assertEqual((raw["provider"], raw["model"]), ("ollama", "mistral:7b"))
-        self.assertEqual(resolve_model(cfg, "llama-server")["provider"], "openai_compatible")
-
-
-class StatsSamplingValidationTests(unittest.TestCase):
-    def test_wilson(self):
-        lo, hi = wilson(5, 10)
-        self.assertTrue(0.2 < lo < 0.5 < hi < 0.8)
-        self.assertEqual(wilson(0, 0), (None, None))
-
-    def test_agreement(self):
-        self.assertAlmostEqual(cohen_kappa([1, 1, 0, 0], [1, 1, 0, 0]), 1.0)
-        self.assertAlmostEqual(cohen_kappa([1, 0, 1, 0], [0, 1, 0, 1]), -1.0)
-        self.assertAlmostEqual(krippendorff_alpha_binary([[1, 1], [0, 0], [1, 1], [0, 0]]), 1.0)
-
+class SamplingTests(unittest.TestCase):
     def test_sampling_reproducible_and_owner_cap(self):
         pool = [{"repo_id": i, "full_name": f"o{i % 3}/r{i}", "owner": f"o{i % 3}", "primary_domain": ["web", "viz"][i % 2],
                  "size_category": "small", "project_kind": "app", "educational": False, "core_infrastructure": False}

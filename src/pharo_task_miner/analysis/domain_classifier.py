@@ -2,8 +2,7 @@
 
 Level 1 (deterministic): keyword evidence in description/README, topics,
 BaselineOf dependencies, package names and referenced framework classes.
-Level 2 (semantic, optional): see ``semantic_classifier.classify_repository_domain``.
-Level 3 (human): labels are exported for review with ``review_status=pending``.
+Level 2 (human): labels are exported for review with ``review_status=pending``.
 
 Scores are uncalibrated weight sums and are labelled as such. The repository
 name is used only when no description, README or topics exist.

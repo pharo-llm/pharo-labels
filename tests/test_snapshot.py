@@ -42,15 +42,23 @@ def make_project(root: Path, with_sample: bool = True):
     (d / "parsed" / "a__b.jsonl.gz").write_bytes(b"\x1f\x8bfake")
     (d / "repositories" / "a__b" / "src").mkdir(parents=True)
     (d / "repositories" / "a__b" / "src" / "A.class.st").write_text("Class { #name : #A }")
-    v = cfg.validation_dir
-    (v / "llm" / "raw").mkdir(parents=True)
+    lab = cfg.labelling_dir
+    (lab / "rounds").mkdir(parents=True)
+    (lab / "rounds" / "round_000.json").write_text('{"round": 0, "method_ids": [1]}')
+    (lab / "labels.jsonl").write_text('{"method_id": 1, "raw_task": "Accessor"}\n')
     if with_sample:
-        (v / "annotation_sample.csv").write_text("sample_id,method_id\nS00001,1\n")
-    (v / "llm" / "raw" / "m.jsonl").write_text('{"status": "ok"}\n')
+        mark_analysed(cfg)
     (cfg.output_dir / "tables").mkdir(parents=True)
     (cfg.output_dir / "tables" / "t.csv").write_text("a\n1\n")
     (cfg.output_dir / "run.log").write_text("log\n")
     return cfg
+
+
+def mark_analysed(cfg):
+    with Database(cfg.database_path) as db:
+        db.execute("INSERT INTO analysis_runs (run_id, stage, started_at, status) VALUES "
+                   "('a1', 'analyze', '2026-10-10T00:00:00+00:00', 'completed')")
+        db.commit()
 
 
 class FakeHub:
@@ -88,7 +96,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(snap.local_state(load_config(root=self.tmp)), "none")
         cfg = make_project(self.tmp / "p", with_sample=False)
         self.assertEqual(snap.local_state(cfg), "partial")
-        (cfg.validation_dir / "annotation_sample.csv").write_text("sample_id\n")
+        mark_analysed(cfg)
         self.assertEqual(snap.local_state(cfg), "complete")
 
     def test_build_contents_privacy_and_portability(self):
@@ -96,7 +104,7 @@ class SnapshotTest(unittest.TestCase):
         staging, man = self.build(cfg)
         paths = {f["path"] for f in man["files"]}
         for expected in ("database/pharo_task_miner.sqlite", "data/processed/statistics.json", "data/raw/repositories.jsonl",
-                         "data/parsed/a__b.jsonl.gz", "validation/annotation_sample.csv", "validation/llm/raw/m.jsonl",
+                         "data/parsed/a__b.jsonl.gz", "labelling/labels.jsonl", "labelling/rounds/round_000.json",
                          "output/tables/t.csv", "output/run.log", "archives/raw_metadata.tar.gz",
                          "archives/api_cache_0.tar.gz", "archives/api_cache_f.tar.gz"):
             self.assertIn(expected, paths)
@@ -150,7 +158,7 @@ class SnapshotTest(unittest.TestCase):
             self.assertEqual(res["status"], "pulled")
             self.assertEqual(snap.local_state(dst), "complete")
             for rel in ("results/data/processed/statistics.json", "results/data/parsed/a__b.jsonl.gz",
-                        "results/validation/llm/raw/m.jsonl", "results/tables/t.csv", "results/run.log",
+                        "results/labelling/labels.jsonl", "results/tables/t.csv", "results/run.log",
                         "results/data/raw/metadata/1.json", "results/data/raw/api_cache/f3/y.json",
                         "results/data/repositories/a__b/src/A.class.st"):
                 self.assertEqual((dst_root / rel).read_bytes(), (src.root / rel).read_bytes(), rel)

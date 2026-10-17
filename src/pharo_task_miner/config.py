@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - PyYAML is a declared dependency
 
 DEFAULTS: dict = {
     "project": {"name": "PharoTaskMiner", "data_dir": "results/data", "output_dir": "results",
-                 "validation_dir": "results/validation", "database": "results/data/processed/pharo_task_miner.sqlite"},
+                 "labelling_dir": "results/labelling", "database": "results/data/processed/pharo_task_miner.sqlite"},
     "github": {
         "token_env": "GITHUB_TOKEN",
         "api_url": "https://api.github.com",
@@ -59,7 +59,7 @@ DEFAULTS: dict = {
                   "diversity_attributes": ["primary_domain", "size_category", "owner", "project_kind",
                                            "educational", "core_infrastructure"],
                   "size_categories": {"tiny": 10, "small": 50, "medium": 250, "large": 1000}},
-    # Study corpus (`pharo-miner filter-corpus`, ./1-2-filtering.sh); see docs/1-2-filtering.md
+    # Filter 2, the study corpus (`pharo-miner filter-corpus`, ./run.sh filter)
     "corpus_filter": {
         "max_repositories": 150, "require_license": True, "min_contributors": 2, "min_commits": 50,
         "min_development_days": 180, "max_years_since_last_push": 5, "require_baseline": True, "require_tonel": True,
@@ -73,41 +73,34 @@ DEFAULTS: dict = {
     "analysis": {"extract_message_sends": True, "extract_blocks": True, "extract_control_flow": True,
                   "extract_api_usage": True, "cooccurrence_min_repos": 3, "cooccurrence_top": 300},
     "classification": {
-        "domains": {"multi_label": True, "allow_unknown": True, "definitions": "taxonomy/domains.yaml",
-                     "min_score": 2.0, "framework_reference_min_share": 0.02, "semantic_analysis": False},
-        "operations": {"multi_label": True, "allow_unknown": True, "taxonomy": "taxonomy/initial_categories.yaml",
-                        "semantic_analysis": False, "multiple_operations_threshold": 4,
-                        "insufficient_context_max_nodes": 3},
+        "domains": {"definitions": "taxonomy/domains.yaml", "min_score": 2.0, "framework_reference_min_share": 0.02},
         "frameworks": "taxonomy/frameworks.yaml",
     },
-    "semantic": {"models_file": "models.yaml", "use": None, "max_methods": 200,
-                  "max_tokens": 1500, "num_ctx": 8192, "timeout_seconds": 300, "seed": 42},
-    "validation": {"require_human_review": True, "label_source": "auto", "annotation_sample_size": 300, "label_repositories": 0,
-                    "sample_strategy": "category_balanced",
-                    "overlap_fraction": 0.3, "max_per_repository": 15, "random_seed": 42,
-                    "annotators": ["annotator_1", "annotator_2"]},
-    # LLM annotation panel (`pharo-miner llm-annotate`, ./2-ai-labelling.sh); models are defined in models.yaml
-    "llm_annotation": {"models": [], "adjudicator": None, "consensus": "majority", "evidence_policy": "enforce",
-                        "limit": 0, "concurrency": None, "spotcheck_size": 30, "random_seed": 42,
-                        "max_attempts": 4, "timeout_seconds": 600, "seed": 42,
-                        "guidelines": "taxonomy/annotation_guidelines.md"},
-    "statistics": {"bootstrap_iterations": 1000, "random_seed": 42, "confidence_level": 0.95,
-                    "exclude_tests": False},
-    "benchmarks": {"inputs": [], "min_covering_tasks_full": 2, "min_repo_prevalence": 0.1},
-    # Benchmark generation (`pharo-miner benchmark-generate`, ./4-benchmark.sh); see docs/4-benchmark.md
-    "benchmark_generation": {
-        "dir": "results/benchmark", "baseline": "PharoTaskBench", "class_prefix": "Ptb",
-        "pharo_version": "130", "mutalk_version": "v3.0.8", "pharo_vm": None, "pharo_image": None,
-        "author": None, "solvers": [], "operations": "auto", "tasks_per_operation": 3, "max_tasks": 0,
-        "seed_min_lines": 5, "seed_max_lines": 40, "random_seed": 42, "concurrency": 2,
-        "max_repair_rounds": 3, "max_amplification_rounds": 2, "solver_attempts": 2, "max_tokens": 6000,
-        "min_tests": 4, "max_target_methods": 2, "repeat": 3, "test_time_limit_seconds": 10, "job_timeout_seconds": 600,
-        "min_mutation_score": 0.8, "min_mutants": 4, "max_seed_similarity": 0.6,
-        "require_operation": True, "require_independent_solution": True},
+    # Labelling of the study corpus (`pharo-miner label`, ./run.sh label): sample size, open
+    # coding of task categories with a small model, saturation loop, expert-validation export
+    "labelling": {
+        "model": "pharo-llm/Qwen2.5-Coder-SFT:1.5B",   # Ollama tag, or hf:<repo>[@revision] (e.g. a -PT adapter)
+        "check_model": "pharo-llm/Qwen2.5-Coder-SFT:7b",  # re-labels the review subset; None = skip
+        "confidence": 0.95, "margin_of_error": 0.05, "proportion": 0.5,  # sample-size calculator (Cochran + FPC)
+        "sample_size": None,                    # None = computed from the three values above
+        "batch_size": 50,                       # methods drawn per saturation round
+        "patience": None,                       # rounds in a row without a new category = saturation; None = derived
+                                                # from min_share: a 0.5% task would have shown with 95% probability
+        "max_rounds": 40,                       # safety cap on saturation rounds
+        "min_support": 2,                       # methods a proposed category needs before it enters the taxonomy
+        "min_share": 0.005,                     # ... and the share of the labelled methods it needs (0.5%)
+        "merge_similarity": 0.88,               # name similarity (typos, spelling) above which two names are one category
+        "embedding_model": "all-minilm",        # Ollama embedding model that merges names with the same meaning; None = off
+        "semantic_threshold": 0.78,             # cosine similarity above which two names mean the same task
+        "include_tests": True,
+        "max_method_lines": 40,                 # longer methods are cut (the model sees the start)
+        "examples_per_category": 5,             # examples per category in the expert-validation file
+        "method_review_size": 60,               # labelled methods experts check one by one
+        "random_seed": 42, "temperature": 0, "max_tokens": 80, "timeout_seconds": 300,
+    },
     # Results snapshots on the Hugging Face Hub (`pharo-miner snapshot …`)
     "snapshot": {"repo": "pharo-llm/pharo-labels", "revision": "main", "include_api_cache": True,
                  "include_clones": False, "token_env": "HF_TOKEN"},
-    "output": {"formats": ["jsonl", "csv", "markdown"]},
 }
 
 
@@ -144,8 +137,8 @@ class Config(dict):
         return self.resolve(self["project"]["output_dir"])
 
     @property
-    def validation_dir(self) -> Path:
-        return self.resolve(self["project"]["validation_dir"])
+    def labelling_dir(self) -> Path:
+        return self.resolve(self["project"]["labelling_dir"])
 
     @property
     def database_path(self) -> Path:

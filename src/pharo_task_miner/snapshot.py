@@ -2,14 +2,15 @@
 
 A snapshot is everything needed to continue without mining again: the
 evidence database, the parsed methods, the GitHub discovery data, the
-annotation sample, human and LLM annotations, tables, reports and logs.
+labelling results (sample, labels, taxonomy, saturation), tables, reports and logs.
 
 Layout in the dataset repository::
 
     README.md                       dataset card (an auto-generated section is kept up to date)
     snapshot/manifest.json          what is inside: files, sha256, sizes, counts, provenance
     snapshot/database/…sqlite       consistent copy of the evidence database
-    snapshot/data/…, validation/…, output/…   result files, same relative layout as locally
+    snapshot/data/…, labelling/…, output/…   result files, same relative layout as locally
+    snapshot/validation/…           annotation files of older snapshots (restored, no longer written)
     snapshot/archives/*.tar.gz      directories with many small files (deterministic archives)
 
 Guarantees:
@@ -29,6 +30,7 @@ Guarantees:
 """
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import gzip
@@ -69,27 +71,29 @@ class Roots:
     project: Path
     data: Path
     validation: Path
+    labelling: Path
     output: Path
     database: Path
     clones: Path
 
     @classmethod
     def from_cfg(cls, cfg) -> "Roots":
-        return cls(project=Path(cfg.root).resolve(), data=cfg.data_dir, validation=cfg.validation_dir,
+        return cls(project=Path(cfg.root).resolve(), data=cfg.data_dir, validation=cfg.output_dir / "validation",
+                   labelling=cfg.labelling_dir,
                    output=cfg.output_dir, database=cfg.database_path,
                    clones=cfg.resolve(cfg["repositories"]["clone_dir"]))
 
 
 def local_state(cfg) -> str:
-    """``complete`` (mining finished: database + annotation sample), ``stale`` (repositories were
-    selected with other settings than the current ``repositories``/``sampling`` configuration),
-    ``selected`` (repositories selected with the current settings, but not yet all cloned, parsed
-    and sampled for annotation), ``partial`` (a run started but did not reach the selection) or
-    ``none``."""
+    """``complete`` (mining finished: the selected repositories are parsed and analysed),
+    ``stale`` (repositories were selected with other settings than the current
+    ``repositories``/``sampling`` configuration), ``selected`` (repositories selected with the
+    current settings, but not yet all cloned, parsed and analysed), ``partial`` (a run started
+    but did not reach the selection) or ``none``."""
     from .sampling.repository_filters import selection_digest
     r = Roots.from_cfg(cfg)
     has_db = r.database.exists() and r.database.stat().st_size > 0
-    has_sample = (r.validation / "annotation_sample.csv").exists()
+    has_sample = has_db and _analysed_after_selection(r.database)
     selection = r.data / "processed" / "sample.json"
     if has_db and selection.exists():
         try:
@@ -104,6 +108,17 @@ def local_state(cfg) -> str:
     if has_db or (r.data / "raw" / "repositories.jsonl").exists():
         return "partial"
     return "none"
+
+
+def _analysed_after_selection(db_path: Path) -> bool:
+    """True when an `analyze` run completed after the latest repository selection."""
+    try:
+        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as c:
+            q = "SELECT MAX(started_at) FROM analysis_runs WHERE stage=? AND status='completed'"
+            selected, analysed = c.execute(q, ("sample",)).fetchone()[0], c.execute(q, ("analyze",)).fetchone()[0]
+    except sqlite3.Error:
+        return False
+    return bool(analysed) and (selected is None or analysed > selected)
 
 
 def _files_under(base: Path, pattern: str = "**/*") -> list[Path]:
@@ -152,7 +167,7 @@ class Builder:
             self.add_file(p, f"{prefix}/{rel}", root, rel if base_rel == "." else f"{base_rel}/{rel}")
 
     def _root_dir(self, root: str) -> Path:
-        return {"data": self.r.data, "validation": self.r.validation, "output": self.r.output,
+        return {"data": self.r.data, "validation": self.r.validation, "labelling": self.r.labelling, "output": self.r.output,
                 "clones": self.r.clones, "database": self.r.database.parent}[root]
 
     # -- archives ------------------------------------------------------------------------------
@@ -190,7 +205,7 @@ class Builder:
     def add_database(self):
         src = self.r.database
         if not src.exists():
-            raise SnapshotError(f"No database at {src}: nothing to snapshot (run ./1-mining.sh first).")
+            raise SnapshotError(f"No database at {src}: nothing to snapshot (run ./run.sh mine first).")
         rel = f"database/{src.name}"
         dst = self.staging / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -235,6 +250,7 @@ class Builder:
             for key, files in sorted(groups.items()):
                 self.add_archive(f"archives/api_cache_{key}.tar.gz", "data", cache, files, scrub_emails=True)
         self.add_tree(r.validation, "validation", "validation")
+        self.add_tree(r.labelling, "labelling", "labelling")
         for sub in ("tables", "reports", "figures"):
             self.add_tree(r.output / sub, "output", f"output/{sub}")
         for p in sorted(r.output.glob("*.log")):
@@ -266,7 +282,7 @@ class Builder:
             "summary": summary, "total_bytes": sum(e["size"] for e in self.entries),
             "files": sorted(self.entries, key=lambda e: e["path"]),
         }
-        for name in ("config.yaml", "models.yaml"):
+        for name in ("config.yaml",):
             p = self.r.project / name
             if p.exists():
                 man.setdefault("project_files", {})[name] = p.read_text(encoding="utf-8")
@@ -331,20 +347,20 @@ Latest snapshot: **`{tag}`** ({man['created_at']}), tool version {man['tool_vers
 | Operation labels | {', '.join(f'{k}: {v}' for k, v in sorted(labels.items())) or '–'} |
 | Files / size | {len(files)} files, {man['total_bytes'] / 1e9:.2f} GB |
 
-**Use it.** With the PharoTaskMiner code, `./1-mining.sh` downloads this snapshot automatically
+**Use it.** With the PharoTaskMiner code, `./run.sh` downloads this snapshot automatically
 when there are no local results (instead of mining GitHub again). Manually:
 `pharo-miner snapshot pull` (latest) or `pharo-miner snapshot pull --revision {tag}`.
 
 **Contents.** `snapshot/manifest.json` lists every file with its sha256. `snapshot/database/` is the
 SQLite evidence database (repositories, methods, message sends, labels, annotations, run provenance);
-`snapshot/data/` parsed methods and discovery data; `snapshot/validation/` the annotation sample, human
-and LLM annotations (`validation/llm/`: every model answer, prompts, agreement); `snapshot/output/`
+`snapshot/data/` parsed methods and discovery data; `snapshot/labelling/` the method sample, every
+model answer, the taxonomy, the saturation curve and the expert-validation files; `snapshot/output/`
 tables, reports, figures and logs; `snapshot/archives/` raw GitHub API responses and repository metadata.
 
 **Notes.** Method source code and README text come from public GitHub repositories and remain under
 their authors' licenses. E-mail addresses in raw GitHub API responses were replaced by `<redacted>`.
-Operation labels with source `llm_adjudicated` were produced by language models and are **not**
-human-validated; `rule_based` labels are automatic.
+Labels in `labelling/` were produced by small language models and are **not** expert-validated
+until the files in `labelling/expert_validation/` are filled in.
 {CARD_END}"""
     if CARD_START in existing and CARD_END in existing:
         before, rest = existing.split(CARD_START, 1)
@@ -438,9 +454,9 @@ def pull(cfg, repo: str, revision: str = "main", force: bool = False, token: str
         backup = r.output.with_name(f"{r.output.name}.before-pull-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
         r.output.rename(backup)
         log(f"  previous results moved to {backup}")
-    for d in (r.data, r.validation, r.output):
+    for d in (r.data, r.output):
         d.mkdir(parents=True, exist_ok=True)
-    dirs = {"data": r.data, "validation": r.validation, "output": r.output, "clones": r.clones, "database": r.database.parent}
+    dirs = {"data": r.data, "validation": r.validation, "labelling": r.labelling, "output": r.output, "clones": r.clones, "database": r.database.parent}
     for f in man["files"]:
         src = path / f["path"]
         base = dirs[f["root"]]
