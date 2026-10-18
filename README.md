@@ -31,6 +31,7 @@ taxonomy + statistics ── check model agreement ── EXPERT VALIDATION expo
 ./run.sh label      # 3. sample size, labelling, saturation loop, check model, expert export
 ./run.sh report     # 4. results/REPORT.md
 ./run.sh status | pull | push
+MODELS="0.5B 1.5B 3b 7b" ./run.sh   # everything, labelling once per model: results/models/COMPARISON.md
 ```
 
 All settings are at the top of `run.sh` (model, confidence, margin, batch size, patience, …);

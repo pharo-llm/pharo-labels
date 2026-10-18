@@ -11,6 +11,7 @@
 #   ./run.sh mine | filter | label | report     one step only
 #   ./run.sh status                             what the database holds
 #   ./run.sh pull | push                        get / save all results on Hugging Face
+#   MODELS="0.5B 1.5B 3b 7b" ./run.sh           steps 3-4 once per model (see MODELS below)
 #
 # Everything goes to results/ (start with results/REPORT.md); the experts' files are in
 # results/labelling/expert_validation/. Tokens are asked once and kept in .env (git-ignored).
@@ -27,7 +28,12 @@ ALLOW_GITHUB_MINING="${ALLOW_GITHUB_MINING:-yes}"   # no = never clone or search
 # :3b, :7b), or a Hugging Face model as hf:<repo>[@revision], e.g. the continued-pretraining
 # adapters hf:pharo-llm/Qwen2.5-Coder-1.5B-PT (0.5B, 1.5B, 3B, 7B; the last checkpoint is used).
 MODEL="${MODEL:-pharo-llm/Qwen2.5-Coder-SFT:1.5B}"
+# Several labelling models, one after the other ("" = MODEL only). A size alone (0.5B, 1.5B, 3b, 7b)
+# means that Pharo model. Each model's labelling, figures and report go to results/models/<model>/,
+# and results/models/COMPARISON.md compares them; an interrupted run resumes the model it was on.
+MODELS="${MODELS:-}"
 # A second model codes the review subset on its own; their agreement is in the report. none = skip.
+# With MODELS, the check model of the check model itself is the model listed before it.
 CHECK_MODEL="${CHECK_MODEL:-pharo-llm/Qwen2.5-Coder-SFT:7b}"
 CONFIDENCE="${CONFIDENCE:-0.95}"            # sample-size calculator: confidence level
 MARGIN="${MARGIN:-0.05}"                    #                         margin of error
@@ -177,18 +183,69 @@ do_report() {
   echo "Open: results/REPORT.md    Experts: results/labelling/expert_validation/README.md"
 }
 
+model_dir() { printf 'results/models/%s' "$(printf '%s' "$1" | tr '/:@' '___')"; }
+
+park_labelling() {   # results/labelling -> results/models/<its model>/labelling
+  [ -f results/labelling/plan.json ] || return 0
+  local m dir
+  m=$(.venv/bin/python -c 'import json,sys; print(json.load(open(sys.argv[1]))["settings"]["model"])' results/labelling/plan.json)
+  dir=$(model_dir "$m")
+  if [ -e "$dir/labelling" ]; then echo "Not moving results/labelling: $dir/labelling already exists."; return 0; fi
+  mkdir -p "$dir"; mv results/labelling "$dir/labelling"
+}
+
+do_label_models() {   # steps 3-4 for every model of MODELS, each in results/models/<model>/
+  local m i dir list=() model0=$MODEL check0=$CHECK_MODEL
+  for m in $MODELS; do [[ "$m" == */* || "$m" == *:* ]] || m="pharo-llm/Qwen2.5-Coder-SFT:$m"; list+=("$m"); done
+  park_labelling
+  for i in "${!list[@]}"; do
+    MODEL=${list[$i]}; CHECK_MODEL=$check0; dir=$(model_dir "$MODEL")
+    if [ "$CHECK_MODEL" = "$MODEL" ]; then
+      if (( i > 0 )); then CHECK_MODEL=${list[$((i-1))]}; else CHECK_MODEL=${list[1]:-none}; fi
+    fi
+    step "Model $((i+1))/${#list[@]}: $MODEL (check model: $CHECK_MODEL)"
+    mkdir -p "$dir"
+    [ -d "$dir/labelling" ] && [ ! -e results/labelling ] && mv "$dir/labelling" results/labelling
+    do_label; do_report
+    mv results/labelling "$dir/labelling"
+    rm -rf "$dir/figures"; [ -d results/figures ] && cp -R results/figures "$dir/figures"
+    cp results/REPORT.md "$dir/REPORT.md"
+  done
+  MODEL=$model0; CHECK_MODEL=$check0
+  .venv/bin/python - "${list[@]}" <<'PY' | tee results/models/COMPARISON.md
+import json, sys
+from pathlib import Path
+print("# Labelling models compared\n")
+print("| Model | Methods labelled | Rounds | Stop | Categories | Rare names | No answer | s/method | Check model | Agreement | Cohen's kappa |")
+print("|---|---|---|---|---|---|---|---|---|---|---|")
+for m in sys.argv[1:]:
+    d = Path("results/models") / m.replace("/", "_").replace(":", "_").replace("@", "_") / "labelling"
+    try:
+        s, p = json.loads((d / "summary.json").read_text()), json.loads((d / "plan.json").read_text())
+    except (OSError, ValueError):
+        print(f"| {m} | not labelled | | | | | | | | | |"); continue
+    a = s.get("agreement") or {}
+    print(f"| [{m}]({d.parent.name}/REPORT.md) | {s['methods_labelled']} | {s['rounds']} | {p.get('result', {}).get('stop_reason', '')} "
+          f"| {s['categories']} | {s['rare_names']} | {s['no_answer']} | {s['seconds_per_method']} "
+          f"| {a.get('model', '-')} | {a.get('agreement', '-')} | {a.get('cohen_kappa', '-')} |")
+print("\nEach model's taxonomy: `<model>/labelling/taxonomy.md`; its expert files: `<model>/labelling/expert_validation/`.")
+PY
+}
+
 # ---------------------------------------------------------------------------- main
 setup_python
 mkdir -p results
 case "${1:-all}" in
-  all)    do_mine; do_filter; do_label; do_report; push_snapshot "Labelling: $MODEL" ;;
+  all)    do_mine; do_filter
+          if [ -n "$MODELS" ]; then do_label_models; else do_label; do_report; fi
+          push_snapshot "Labelling: ${MODELS:-$MODEL}" ;;
   mine)   do_mine ;;
   filter) do_filter ;;
-  label)  do_label ;;
+  label)  if [ -n "$MODELS" ]; then do_label_models; else do_label; fi ;;
   report) do_report ;;
   status) "$MINER" status ;;
   pull)   shift; "$MINER" snapshot pull "$@" ;;
   push)   PUSH_SNAPSHOT=yes; push_snapshot "Results" ;;
-  -h|--help|help) sed -n '2,17p' "$0" ;;
-  *) echo "Unknown step '$1'."; sed -n '2,17p' "$0"; exit 1 ;;
+  -h|--help|help) sed -n '2,18p' "$0" ;;
+  *) echo "Unknown step '$1'."; sed -n '2,18p' "$0"; exit 1 ;;
 esac
