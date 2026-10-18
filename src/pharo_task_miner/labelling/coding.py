@@ -78,20 +78,33 @@ def _block(cls: str, source: str, task: str | None = None, summary: str | None =
     return s
 
 
-def method_source(method: dict, max_lines: int) -> str:
+def method_source(method: dict, max_lines: int, max_chars: int | None = None) -> str:
+    """The start of the method: at most ``max_lines`` lines and ``max_chars`` characters. The
+    character cap matters for generated methods holding data on a single line (up to 3.4M tokens
+    in the corpus): cut by lines only, they overflow the model's context, and Ollama then drops the
+    start of the prompt, which holds the instructions and the examples."""
     lines = (method.get("source") or "").strip().splitlines()
-    if len(lines) > max_lines:
-        lines = lines[:max_lines] + ["\t\"...\""]
-    return "\n".join(lines)
+    cut = len(lines) > max_lines
+    text = "\n".join(lines[:max_lines])
+    if max_chars and len(text) > max_chars:
+        text, cut = text[:max_chars].rstrip(), True
+    return text + "\n\t\"...\"" if cut else text
 
 
-def build_prompt(method: dict, max_lines: int = 40) -> str:
+def build_prompt(method: dict, max_lines: int = 40, max_chars: int | None = None) -> str:
     """Few-shot completion prompt; the answer starts after "### Summary:"."""
-    p = HEADER
-    for cls, src, task, summary in EXAMPLES:
-        p += _block(cls, src, task, summary)
+    return prefix() + method_block(method, max_lines, max_chars)
+
+
+def prefix() -> str:
+    """The part of the prompt every method shares: instructions and worked examples."""
+    return HEADER + "".join(_block(cls, src, task, summary) for cls, src, task, summary in EXAMPLES)
+
+
+def method_block(method: dict, max_lines: int = 40, max_chars: int | None = None) -> str:
+    """The part of the prompt that is the method itself."""
     cls = method["class_name"] + (" class" if method.get("side") == "class" else "")
-    return p + _block(cls, method_source(method, max_lines))
+    return _block(cls, method_source(method, max_lines, max_chars))
 
 
 _TASK = re.compile(r"\n?#*\s*Task\s*:\s*(.*)", re.IGNORECASE)

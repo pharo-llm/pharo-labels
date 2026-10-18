@@ -57,7 +57,7 @@ categories found so far: small models copy such a list even when nothing in it f
 
 | Path | Contents |
 |---|---|
-| `results/REPORT.md` | **start here**: every step from GitHub to the expert export, with numbers and figures |
+| `results/REPORT.md` | **start here**: every step from GitHub to the expert export, with numbers and figures, and what the labelling would cost on commercial APIs |
 | `results/labelling/taxonomy.csv`, `taxonomy.md` | the categories, their share of the corpus (95% intervals) and examples |
 | `results/labelling/labels.csv` | every labelled method, its summary, its category and a GitHub link |
 | `results/labelling/curve.csv` | the saturation curve |

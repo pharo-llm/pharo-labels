@@ -5,10 +5,12 @@
 3. Sample size and labelling, with statistics
 4. The saturation loop
 5. The expert-validation export
+6. What the labelling would cost on a commercial API
 """
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import csv
 import json
 from pathlib import Path
 
@@ -30,6 +32,12 @@ def _n(x) -> str:
 
 def _pct(x) -> str:
     return f"{x:.1%}"
+
+
+def _usd(x) -> str:
+    if x is None:
+        return "–"
+    return f"${x:,.2f}" if x < 10 else f"${x:,.0f}"
 
 
 def mining_section(cfg, db: Database) -> tuple[list[str], dict]:
@@ -235,6 +243,67 @@ def labelling_sections(cfg, plan: dict, summ: dict) -> list[str]:
     return L
 
 
+def cost_section(cfg, db: Database, plan: dict | None, summ: dict | None) -> list[str]:
+    from . import cost, sampling
+    from ..sampling.corpus_filter import study_repo_ids
+    study = study_repo_ids(db)
+    if not study:
+        return []
+    e = cost.estimate(db, cfg, sampling.population(db, study, True), cfg.labelling_dir, plan, summ)
+    c, t = cfg["api_cost"], e["tokens"]
+    table = cfg.output_dir / "tables" / "api_cost.csv"
+    table.parent.mkdir(parents=True, exist_ok=True)
+    with table.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(e["prices"][0]))
+        w.writeheader()
+        w.writerows({k: round(v, 4) if isinstance(v, float) else v for k, v in r.items()} for r in e["prices"])
+    lo, hi = c["budget_factor"]
+    L = ["## 6. What the labelling would cost on a commercial API\n",
+         f"Tokens counted with {e['tokenizer']} on the prompts this labelling builds; prices of "
+         f"{c['prices_date']} (USD per million tokens, in `config.yaml`, `api_cost`). Every price below is for "
+         "one model; all numbers: `results/tables/api_cost.csv`.\n",
+         "| Tokens per call | |", "|---|---:|",
+         f"| Shared prefix: instructions and {len(cost.coding.EXAMPLES)} worked examples (+ chat wrapping) | "
+         f"{_n(e['prefix'])} (+ {e['chat_overhead']}) |"]
+    if e["method_mean_this_run"] is not None:
+        L.append(f"| Method, mean over the calls of this run | {e['method_mean_this_run']:,.0f} |")
+    L += [f"| Method, mean over the whole corpus | {e['method_mean_corpus']:,.0f} |",
+          f"| Answer (summary and task), mean | {e['output_mean']:,.0f} |", "",
+          f"{_n(len(t['cut_by_cap']))} methods of the corpus are cut by the character cap (`max_method_chars`); "
+          f"without it, {_n(t['too_long_without_cap'])} prompts would not fit in the labeller's "
+          f"{_n(cost.NUM_CTX)}-token context.\n"]
+    for sc in e["scenarios"]:
+        what = (f"every call of this labelling ({_n(sc['calls'])}: labelled methods and check model)"
+                if sc["scenario"] == "This run" else f"every method of the corpus once ({_n(sc['calls'])} calls)")
+        rows = [r for r in e["prices"] if r["scenario"] == sc["scenario"]]
+        L += [f"**{sc['scenario']}**: {what}; {rows[0]['input_mtok']:,.2f}M input and "
+              f"{rows[0]['output_mtok']:,.2f}M output tokens (GPT count).\n",
+              "| Model | Standard | Batch API | Batch, reasoning model | Batch + prompt cache | **Total budget** |",
+              "|---|---:|---:|---:|---:|---:|"]
+        for r in rows:
+            L.append(f"| {r['model']} | {_usd(r['standard'])} | {_usd(r['batch'])} | {_usd(r['reasoning_batch'])} | "
+                     f"{_usd(r['cached_batch'])} | **{_usd(r['budget_low'])} – {_usd(r['budget_high'])}** |")
+        L.append("")
+    std = e["levers"][0][1]
+    L += [f"*Reasoning model*: + {c['reasoning_tokens_per_call']} hidden tokens per call billed as output (low "
+          "effort; an assumption, measure it on 50 calls). *Prompt cache*: the shared prefix is cached only from "
+          f"{c['cache_min_prefix_tokens']} tokens; it is assumed padded to that size with more worked examples and "
+          "read from the cache on every call (best case). *Total budget*: Batch API without reasoning "
+          f"× {lo} to Batch API with reasoning × {hi}, for a pilot, retries, the check model and a rerun. Claude "
+          "counts more tokens than GPT on code: × 1.25 assumed (`token_factor`).\n",
+          f"**How to reduce it** ({e['reference']}, whole corpus):\n",
+          "| What | Cost | Compared with the standard API |", "|---|---:|---:|"]
+    for name, v in e["levers"]:
+        d = None if v is None else v / std - 1
+        L.append(f"| {name} | {_usd(v)} | {'–' if d is None else f'{d:+.1%}' if 0.99 < abs(d) < 1 else f'{d:+.0%}'} |")
+    if e["local"]:
+        L.append(f"\nThe local model of this run (`{e['local']['model']}`) labels the whole corpus in about "
+                 f"{e['local']['hours']:,.0f} hours, with no API cost.")
+    L.append("\nThe saturation loop sends one batch per round: with the Batch API, each of its rounds can wait up to "
+             "24 hours. Labelling the whole corpus is a single batch.\n")
+    return L
+
+
 def write(cfg, db: Database) -> Path:
     out = cfg.output_dir / "REPORT.md"
     ldir = cfg.labelling_dir
@@ -264,5 +333,6 @@ def write(cfg, db: Database) -> Path:
         L += labelling_sections(cfg, plan, summ)
     else:
         L += ["## 3-5. Labelling\n", "Not run yet: `./run.sh label`.\n"]
+    L += cost_section(cfg, db, plan, summ)
     out.write_text("\n".join(L) + "\n", encoding="utf-8")
     return out

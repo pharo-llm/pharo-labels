@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pharo_task_miner.labelling import coding, sampling, saturation  # noqa: E402
+from pharo_task_miner.labelling import coding, cost, sampling, saturation  # noqa: E402
 
 
 class SampleSizeTests(unittest.TestCase):
@@ -69,6 +69,15 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual(p.count("### Task:"), len(coding.EXAMPLES))
         long = coding.build_prompt({"class_name": "A", "source": "\n".join(["x"] * 100)}, max_lines=5)
         self.assertIn('"..."', long)
+
+    def test_character_cap_cuts_long_lines(self):
+        m = {"class_name": "A", "source": "data\n\t^ #(" + "1 " * 10000 + ")"}
+        self.assertEqual(coding.build_prompt(m, 40), coding.prefix() + coding.method_block(m, 40))
+        cut = coding.method_source(m, 40, 100)
+        self.assertLessEqual(len(cut), 100 + len('\n\t"..."'))
+        self.assertTrue(cut.endswith('\t"..."'))
+        short = {"class_name": "A", "source": "x\n\t^ x"}
+        self.assertEqual(coding.method_source(short, 40, 100), coding.method_source(short, 40))   # unchanged
 
 
 class CodebookTests(unittest.TestCase):
@@ -179,6 +188,39 @@ class SaturationTests(unittest.TestCase):
         self.assertTrue(curve[2].startswith("1,10,30,1,Visitor,2,"))
         self.assertEqual(res["rounds"], 3)                              # round 1 adds one, 2 and 3 are quiet
 
+    def test_answers_made_with_another_prompt_are_redone_in_place(self):
+        out = self.tmp / "lab4"
+        s = dict(self.s)
+        saturation.prepare(out, s, lambda m: None)
+        recs = lambda ids: {m: {**r, "source": r["source"] + ("x" * 500 if m % 7 == 0 else "")}
+                            for m, r in records(ids).items()}
+        first = saturation.Run(out, s, self.pop, recs, lambda m: None)
+        res = first.run(FakeModel(["Accessor", "Parsing"]))
+        first.check(FakeModel(["Accessor"]), 5)
+        long = sorted(m for m in first.labels if m % 7 == 0)
+        self.assertTrue(long)
+        for name in ("labels.jsonl", "check.jsonl"):               # as stored before prompts had a hash
+            rows = [json.loads(x) for x in (out / name).read_text().splitlines()]
+            (out / name).write_text("".join(json.dumps({k: v for k, v in r.items() if k != "prompt_sha"}) + "\n"
+                                            for r in rows))
+        capped = {**s, "max_method_chars": 100}
+        again = FakeModel(["Accessor", "Parsing"])
+        run2 = saturation.Run(out, capped, self.pop, recs, lambda m: None)
+        self.assertEqual(run2.run(again), res)                     # same rounds, same taxonomy
+        self.assertEqual(again.calls, len(long))                   # only the methods whose prompt changed
+        rows = [json.loads(x) for x in (out / "labels.jsonl").read_text().splitlines()]
+        self.assertEqual(len(rows), res["methods_labelled"])
+        self.assertEqual(sorted(r["method_id"] for r in rows if "prompt_sha" in r), long)
+        checker = FakeModel(["Parsing"])
+        checks = run2.check(checker, 5)
+        self.assertEqual(checker.calls, sum(1 for c in checks if c["method_id"] % 7 == 0))
+        self.assertEqual(len((out / "check.jsonl").read_text().splitlines()), 5)
+        run3 = saturation.Run(out, capped, self.pop, recs, lambda m: None)
+        none = FakeModel(["Other"])
+        run3.run(none)
+        run3.check(none, 5)
+        self.assertEqual(none.calls, 0)                            # nothing stale any more
+
     def test_changed_settings_start_fresh(self):
         out = self.tmp / "lab3"
         s = dict(self.s)
@@ -192,6 +234,32 @@ class SaturationTests(unittest.TestCase):
         saturation.prepare(out, {**self.s, "model": "other"}, lambda m: None)
         self.assertFalse((out / "labels.jsonl").exists())
         self.assertEqual(len(list(self.tmp.glob("lab3.before-*"))), 1)
+
+
+class CostTests(unittest.TestCase):
+    c = {"chat_overhead_tokens": 20, "batch_discount": 0.5, "reasoning_tokens_per_call": 250,
+         "cache_min_prefix_tokens": 1024, "budget_factor": [1.5, 2.0]}
+
+    def test_price_of_a_scenario(self):
+        sc = cost.scenario("x", 1000, 100_000, 16_000, 700, self.c)    # 1,000 calls of 720 + 100 tokens
+        m = {"name": "M", "input": 10.0, "cached_input": 1.0, "output": 50.0}
+        p = cost.price(sc, m, self.c)
+        self.assertAlmostEqual(p["input_mtok"], 0.82)
+        self.assertAlmostEqual(p["standard"], 0.82 * 10 + 0.016 * 50)
+        self.assertAlmostEqual(p["batch"], p["standard"] / 2)
+        self.assertAlmostEqual(p["reasoning"], p["standard"] + 0.25 * 50)
+        self.assertAlmostEqual(p["cached"], 1.024 * 1 + 0.1 * 10 + 0.016 * 50)   # prefix padded to 1,024
+        self.assertAlmostEqual(p["budget_low"], p["batch"] * 1.5)
+        self.assertAlmostEqual(p["budget_high"], p["reasoning_batch"] * 2)
+        claude = cost.price(sc, {**m, "token_factor": 1.25}, self.c)
+        self.assertAlmostEqual(claude["standard"], p["standard"] * 1.25)
+        self.assertIsNone(cost.price(sc, {**m, "cached_input": None}, self.c)["cached"])
+
+    def test_tokenizer_counts_something(self):
+        count, name = cost.tokenizer()
+        self.assertTrue(name)
+        self.assertGreater(count(coding.prefix()), 500)
+        self.assertEqual(count(""), 0)
 
 
 if __name__ == "__main__":

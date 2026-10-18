@@ -94,9 +94,41 @@ DEFAULTS: dict = {
         "semantic_threshold": 0.78,             # cosine similarity above which two names mean the same task
         "include_tests": True,
         "max_method_lines": 40,                 # longer methods are cut (the model sees the start)
+        "max_method_chars": 4000,               # ... and so are methods with very long lines (generated data),
+                                                # which would not fit in the model's context
         "examples_per_category": 5,             # examples per category in the expert-validation file
         "method_review_size": 60,               # labelled methods experts check one by one
         "random_seed": 42, "temperature": 0, "max_tokens": 80, "timeout_seconds": 300,
+    },
+    # What the labelling would cost on a commercial API (REPORT.md, section 6). USD per million tokens,
+    # standard tier, short context; prices of 2026-10-18 from the providers' pages.
+    "api_cost": {
+        "prices_date": "2026-10-18",
+        "sources": ["https://developers.openai.com/api/docs/pricing", "https://claude.com/pricing",
+                    "https://ai.google.dev/gemini-api/docs/pricing"],
+        "reference_model": "GPT-6 Astra",       # the model the savings are computed on
+        "batch_discount": 0.5,                  # Batch API: half price, answers within 24 h
+        "cache_min_prefix_tokens": 1024,        # a shared prefix shorter than this is never cached
+        "chat_overhead_tokens": 20,             # system/user message wrapping of a chat API, per call
+        "reasoning_tokens_per_call": 250,       # hidden reasoning at low effort (an assumption: measure it)
+        "budget_factor": [1.5, 2.0],            # pilot, retries, check model, a rerun
+        "models": [   # token_factor: tokens of this provider per GPT token (Claude counts more on code)
+            {"name": "GPT-6 Astra", "provider": "OpenAI", "input": 10.0, "cached_input": 1.0, "output": 50.0},
+            {"name": "GPT-6.1 Sol", "provider": "OpenAI", "input": 2.0, "cached_input": 0.10, "output": 10.0},
+            {"name": "GPT-6 Luna", "provider": "OpenAI", "input": 0.10, "cached_input": 0.01, "output": 0.50},
+            {"name": "GPT-5.4 mini", "provider": "OpenAI", "input": 0.75, "cached_input": 0.075, "output": 4.50},
+            {"name": "Claude Fable 5.1", "provider": "Anthropic", "input": 10.0, "cached_input": 0.25, "output": 50.0,
+             "token_factor": 1.25},
+            {"name": "Claude Opus 5.5", "provider": "Anthropic", "input": 4.0, "cached_input": 0.20, "output": 20.0,
+             "token_factor": 1.25},
+            {"name": "Claude Sonnet 5.5", "provider": "Anthropic", "input": 2.0, "cached_input": 0.10, "output": 10.0,
+             "token_factor": 1.25},
+            {"name": "Claude Haiku 5.5", "provider": "Anthropic", "input": 0.10, "cached_input": 0.01, "output": 0.50,
+             "token_factor": 1.25},
+            {"name": "Gemini 4 Argon", "provider": "Google", "input": 2.0, "cached_input": 0.10, "output": 10.0},
+            {"name": "Gemini 3.8 Flash", "provider": "Google", "input": 0.75, "cached_input": 0.075, "output": 3.75},
+            {"name": "Gemini 2.5 Flash-Lite", "provider": "Google", "input": 0.10, "cached_input": 0.01, "output": 0.40},
+        ],
     },
     # Results snapshots on the Hugging Face Hub (`pharo-miner snapshot …`)
     "snapshot": {"repo": "pharo-llm/pharo-labels", "revision": "main", "include_api_cache": True,

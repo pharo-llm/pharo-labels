@@ -7,7 +7,8 @@
 #     2. filter   FILTER 2 (13 criteria): the study corpus, ~135 repositories / ~280,000 methods
 #     3. label    sample-size calculator -> small model labels the sample (open coding) ->
 #                 saturation loop over new methods -> check model -> expert-validation export
-#     4. report   results/REPORT.md: every number of steps 1-3, with figures
+#     4. report   results/REPORT.md: every number of steps 1-3, with figures, and what the
+#                 labelling would cost on commercial APIs (prices in config.yaml, api_cost)
 #   ./run.sh mine | filter | label | report     one step only
 #   ./run.sh status                             what the database holds
 #   ./run.sh pull | push                        get / save all results on Hugging Face
@@ -246,6 +247,6 @@ case "${1:-all}" in
   status) "$MINER" status ;;
   pull)   shift; "$MINER" snapshot pull "$@" ;;
   push)   PUSH_SNAPSHOT=yes; push_snapshot "Results" ;;
-  -h|--help|help) sed -n '2,18p' "$0" ;;
-  *) echo "Unknown step '$1'."; sed -n '2,18p' "$0"; exit 1 ;;
+  -h|--help|help) sed -n '2,19p' "$0" ;;
+  *) echo "Unknown step '$1'."; sed -n '2,19p' "$0"; exit 1 ;;
 esac

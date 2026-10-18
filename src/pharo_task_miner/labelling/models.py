@@ -17,6 +17,9 @@ import re
 import time
 
 
+NUM_CTX = 8192   # Ollama context: prompt + answer must fit, or Ollama drops the start of the prompt
+
+
 class ModelError(RuntimeError):
     """The model cannot be used (server not running, model not installed, missing package)."""
 
@@ -53,7 +56,7 @@ class OllamaModel:
     def complete(self, prompt: str, max_tokens: int, stop: list[str]) -> str:
         payload = {"model": self.tag, "prompt": prompt, "raw": True, "stream": False,
                    "options": {"temperature": self.temperature, "seed": self.seed, "num_predict": max_tokens,
-                               "stop": stop, "num_ctx": 8192}}
+                               "stop": stop, "num_ctx": NUM_CTX}}
         for attempt in range(4):
             try:
                 r = self.requests.post(f"{self.url}/api/generate", json=payload, timeout=self.timeout)

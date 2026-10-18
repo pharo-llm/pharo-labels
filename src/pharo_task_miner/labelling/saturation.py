@@ -9,6 +9,9 @@ where it stopped (labelled methods are never sent to the model again):
 * ``curve.csv``          the saturation curve, one row per round
 * ``check.jsonl``        the check model's labels of the review subset
 * ``codebook.json``      every proposed category: support, variants, first and admission round
+
+Every answer records a hash of its prompt. When a setting changes the prompt of a few methods only
+(``max_method_chars``), the resumed run asks the model again for those methods and keeps the rest.
 """
 from __future__ import annotations
 
@@ -26,7 +29,9 @@ from . import coding, sampling
 def _settings_digest(s: dict) -> str:
     """The settings that change the model's answers or the methods drawn. Codebook settings
     (min_support, merge thresholds, embedding model) are not in it: each method is coded on its
-    own, so changing them replays the stored answers instead of calling the model again."""
+    own, so changing them replays the stored answers instead of calling the model again. Nor is
+    ``max_method_chars``: it changes the prompt of very long methods only, which are labelled
+    again on their own (``Run.refresh``)."""
     keys = ("model", "random_seed", "sample_size", "batch_size", "include_tests", "max_method_lines", "max_tokens",
             "prompt_version", "corpus_run_id")
     return hashlib.sha256(json.dumps({k: s.get(k) for k in keys}, sort_keys=True).encode()).hexdigest()[:16]
@@ -47,6 +52,16 @@ def _read_jsonl(path: Path) -> list[dict]:
 def _append(path: Path, row: dict):
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _rewrite(path: Path, rows: list[dict]):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _sha(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode()).hexdigest()[:16]
 
 
 class Run:
@@ -77,6 +92,50 @@ class Run:
             if not left[r]:                                  # the round is complete: end-of-round admission
                 self.codebook.admit(r, len(self.labels))
 
+    # ------------------------------------------------------------------------------- prompts
+    def prompt(self, method: dict) -> str:
+        return coding.build_prompt(method, self.s["max_method_lines"], self.s.get("max_method_chars"))
+
+    def stale(self, rows) -> list[tuple[dict, dict]]:
+        """(stored answer, method) for the answers whose prompt is not the one the settings build now.
+        An answer stored without a prompt hash was made before ``max_method_chars`` existed."""
+        rows = list(rows)
+        recs = self.records([r["method_id"] for r in rows])
+        out = []
+        for r in rows:
+            m = recs.get(r["method_id"])
+            if m is None:
+                continue
+            old = r.get("prompt_sha") or _sha(coding.build_prompt(m, self.s["max_method_lines"]))
+            if old != _sha(self.prompt(m)):
+                out.append((r, m))
+        return out
+
+    def _answer(self, model, method: dict) -> dict:
+        prompt = self.prompt(method)
+        t = time.monotonic()
+        raw = model.complete(prompt, self.s["max_tokens"], coding.STOP)
+        summary, task = coding.parse_answer(raw)
+        return {"summary": summary, "raw_task": task, "model": model.name, "prompt_version": coding.PROMPT_VERSION,
+                "prompt_sha": _sha(prompt), "seconds": round(time.monotonic() - t, 3), "output": raw}
+
+    def refresh(self, model) -> int:
+        """Ask the model again for the stored answers whose prompt changed, in place, so the rounds
+        and the order in which the codebook sees the answers stay the same."""
+        stale = self.stale(self.labels.values())
+        if not stale:
+            return 0
+        self.log(f"  {len(stale)} stored answer(s) were made with another prompt: labelling them again.")
+        new = {}
+        for r, m in stale:
+            ans = self._answer(model, m)
+            task = ans["raw_task"]
+            near = task and (self.codebook.match(task) or self.codebook.semantic_match(task)[0])
+            new[r["method_id"]] = {**r, **ans, "category_at_labelling": near or task}
+        _rewrite(self.out / "labels.jsonl", [new.get(r["method_id"], r) for r in _read_jsonl(self.out / "labels.jsonl")])
+        self._replay(None)
+        return len(stale)
+
     # ------------------------------------------------------------------------------- rounds
     def _round_ids(self, round_no: int) -> list[int] | None:
         p = self.out / "rounds" / f"round_{round_no:03d}.json"
@@ -105,17 +164,13 @@ class Run:
         new_names, t0 = 0, time.monotonic()
         for i, mid in enumerate(todo, 1):
             m = recs[mid]
-            prompt = coding.build_prompt(m, self.s["max_method_lines"])
-            t = time.monotonic()
-            raw = model.complete(prompt, self.s["max_tokens"], coding.STOP)
-            summary, task = coding.parse_answer(raw)
+            ans = self._answer(model, m)
+            task = ans["raw_task"]
             known = task is not None and self.codebook.match(task) is not None
             canon = self.codebook.observe(task, round_no)
             new_names += task is not None and not known
             row = {"method_id": mid, "round": round_no, "repository": m["full_name"], "signature": m["signature"],
-                   "is_test": m["is_test"], "summary": summary, "raw_task": task, "category_at_labelling": canon,
-                   "model": model.name, "prompt_version": coding.PROMPT_VERSION,
-                   "seconds": round(time.monotonic() - t, 3), "output": raw}
+                   "is_test": m["is_test"], "category_at_labelling": canon, **ans}
             self.labels[mid] = row
             _append(self.out / "labels.jsonl", row)
             if i % 25 == 0 or i == len(todo):
@@ -140,6 +195,7 @@ class Run:
 
     # ------------------------------------------------------------------------------- loop
     def run(self, model) -> dict:
+        self.refresh(model)
         patience, quiet, stop = self.s["patience"], 0, "max_rounds"
         for round_no in range(0, self.s["max_rounds"] + 1):
             ids = self.draw(round_no)
@@ -190,14 +246,17 @@ class Run:
         """A second model codes a random subset independently, with the same prompt; both answers
         go through the same codebook, so agreement means the same final category."""
         path = self.out / "check.jsonl"
-        done = {r["method_id"]: r for r in _read_jsonl(path) if r.get("model") == model.name}
+        rows = _read_jsonl(path)
+        done = {r["method_id"]: r for r in rows if r.get("model") == model.name}
+        stale = {r["method_id"] for r, _ in self.stale(done.values())}
+        if stale:                                     # made with another prompt: coded again below
+            _rewrite(path, [r for r in rows if not (r.get("model") == model.name and r["method_id"] in stale)])
+            done = {k: v for k, v in done.items() if k not in stale}
         ids = self.review_ids(size)
         recs = self.records([m for m in ids if m not in done])
         for i, mid in enumerate([m for m in ids if m not in done], 1):
-            raw = model.complete(coding.build_prompt(recs[mid], self.s["max_method_lines"]), self.s["max_tokens"],
-                                 coding.STOP)
-            summary, task = coding.parse_answer(raw)
-            row = {"method_id": mid, "model": model.name, "summary": summary, "raw_task": task, "output": raw}
+            ans = self._answer(model, recs[mid])
+            row = {"method_id": mid, **{k: ans[k] for k in ("model", "summary", "raw_task", "prompt_sha", "output")}}
             done[mid] = row
             _append(path, row)
             if i % 20 == 0:

@@ -156,7 +156,8 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(run("report"), 0)
             report = (tmp / "out" / "REPORT.md").read_text()
             for h in ("## 1. GitHub mining", "## 2. Filter 2", "## 3. Sample size", "## 4. The saturation loop",
-                      "## 5. Expert validation"):
+                      "## 5. Expert validation", "## 6. What the labelling would cost", "**Whole corpus**",
+                      "**How to reduce it**"):
                 self.assertIn(h, report)
 
 
