@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 from ..storage.database import Database
+from .classify import RULE
 
 QUALITY_ORDER = [
     ("quality: no Pharo package source (Tonel/FileTree)", "Has Tonel or FileTree source files"),
@@ -224,6 +225,14 @@ def labelling_sections(cfg, plan: dict, summ: dict) -> list[str]:
                      "max_rounds": f"**Saturation not reached** within {plan['settings']['max_rounds']} rounds: "
                                    "increase `MAX_ROUNDS` (the labels done so far are kept).",
                      "population_exhausted": "Every method of the corpus was labelled."}.get(stop, "") + "\n")
+    if summ.get("unseen_name_probability") is not None and summ["curve"]:
+        L.append(("The categories saturate; the long tail of rare names does not" if stop == "saturated" else
+                  "The long tail of rare names") + ": the candidates grew from "
+                 f"{summ['curve'][0]['candidates_total']} to {summ['curve'][-1]['candidates_total']} over the loop. "
+                 f"{summ['singleton_names']} names were given to a single method, so the probability that the next method "
+                 f"gets a name never seen before is about {_pct(summ['unseen_name_probability'])} (Good–Turing estimate, "
+                 f"Good 1953: methods with a name seen once / methods labelled). Such names are each below "
+                 f"{plan['settings'].get('min_share', 0):.1%}: they are what the taxonomy leaves under Other by design.\n")
     if summ["figures"].get("saturation_curve"):
         L.append("![Saturation curve](figures/saturation_curve.png)\n")
     return L + classify_section(cfg)
@@ -242,7 +251,9 @@ def classify_section(cfg) -> list[str]:
          "a codebook with definitions (`codebook_draft.csv`, consolidated by the researcher in `codebook.csv`), and "
          "models of different families classify a **new** random sample with it (deductive coding: Shah et al. 2025; "
          "taxonomy then classification: TnT-LLM, KDD 2024). Different families, because errors of related models are "
-         "correlated (Kim et al., ICML 2025).\n"]
+         "correlated (Kim et al., ICML 2025). Each codebook entry has a definition, when to use it and when not to "
+         "(MacQueen et al. 1998); categories below the minimum share at the end of the loop are left to Other. The "
+         f"models, like the experts, follow one rule: {RULE}\n"]
     p = cdir / "agreement.json"
     if not p.exists():
         return L + ["Not run yet: `./run.sh classify`.\n"]
@@ -270,6 +281,16 @@ def classify_section(cfg) -> list[str]:
         if k:
             L.append(f"| `{m}`: answers outside the codebook | {k} |")
     L.append("")
+    revs = a.get("revisions") or []
+    if len(revs) > 1:
+        L += [f"**Revisions** of the instrument (codebook or models), each measured on its own sample, disjoint from "
+              "the earlier ones; all are reported, the last one is the one above:\n",
+              "| Revision | Models | Codebook | Categories | α | AC1 | Other, per model | Gate |", "|---:|---|---|---:|---:|---:|---|---|"]
+        for r in revs:
+            L.append(f"| {r['revision']} | " + ", ".join(f"`{m}`" for m in r["models"]) + f" | {r['codebook_kind']} | "
+                     f"{r['categories']} | {_f(r['krippendorff_alpha'])} | {_f(r['gwet_ac1'])} | "
+                     + ", ".join(_pct(v) for v in r["other_share"].values()) + f" | {'passed' if r['reliable'] else 'not passed'} |")
+        L.append("")
     L.append(f"**Gate** (Krippendorff 2004: α ≥ 0.8 reliable, ≥ 0.667 tentative; threshold here {a['min_alpha']}): "
              + ("**passed**: the experts get the files below.\n" if a["reliable"] else
                 "**not passed**: no expert files; what to change is in `classify/NOT_RELIABLE.md`.\n"))

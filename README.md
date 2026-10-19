@@ -21,14 +21,16 @@ initial sample ── a model writes a summary and names the task of each method
    │  SATURATION LOOP: draw 50 new methods, label, count new categories;
    │  stop when enough rounds in a row add no category
    ▼
-codebook_draft.csv ── categories + definitions written by the model
+codebook_draft.csv ── categories still at ≥ 0.5%, each with a definition, "use when" and
+   │                     "do not use when", written by the model
    │  you consolidate it: results/labelling/codebook.csv (merge, rename, define; + Other)
    ▼
-NEW random sample (384) ── classified by qwen3.8 (Alibaba), gemma4 (Google), granite4.2 (IBM)
+NEW random sample (384) ── classified by qwen3.8 (Alibaba), gemma4 (Google), mistral-small3.2 (Mistral AI)
    │  Krippendorff's α, Fleiss' κ, Gwet's AC1; majority label; level 3/3, 2/3, none;
    │  prompt-sensitivity check (codebook and examples shuffled)
    ▼
-α < 0.667 ── NOT_RELIABLE.md: sharpen the codebook, classify again
+α < 0.667 ── NOT_RELIABLE.md: sharpen the codebook, classify again (a new revision: a new,
+   │         disjoint sample; every revision is reported)
 α ≥ 0.667 ── EXPERT FILES: 200 methods stratified by level (more where models disagree),
    │         classified blind by each expert, alone (expert_validation/returned/<expert>/)
    ▼
@@ -61,7 +63,7 @@ Open-weight models on your own machine (an M4 Max with 36 GB), no API and no GPU
 |---|---|
 | `qwen3.8:27b` (Alibaba, 18 GB) | `MODEL`: inductive coding and the codebook definitions; first of `CLASSIFY_MODELS` |
 | `gemma4:12b` (Google, 8 GB) | second of `CLASSIFY_MODELS` |
-| `granite4.2:8b` (IBM, 5 GB) | third of `CLASSIFY_MODELS` |
+| `mistral-small3.2:24b` (Mistral AI, 15 GB) | third of `CLASSIFY_MODELS` (replaces `granite4.2:8b`: METHODOLOGY.md, problem 14) |
 
 Labelling is describing code, so the three models are instruction-tuned models from three
 companies, asked through Ollama's chat API (thinking off, deterministic decoding). In step 3 each
@@ -77,7 +79,9 @@ The full explanation, with every problem, its solution and its sources: [METHODO
 | Saturation loop | when have all the tasks been seen? | stop when a task of ≥ 0.5% prevalence would have appeared with 95% probability; inductive thematic saturation (De Paoli & Mathis, *Quality & Quantity*) |
 | Inductive, then deductive | open codes of different models cannot be compared ("Setter" vs "Accessor") | build a codebook, then classify with it: LLMs agree with humans far better deductively (Shah et al. 2025; TnT-LLM, KDD 2024; Nakashima et al., ASE 2026) |
 | New sample for step 4 | a codebook tested on the data it was built from looks better than it is | the classified sample excludes every method of step 3 |
-| Three families | related models make the same mistakes (Kim et al., ICML 2025); a majority vote amplifies shared errors | Alibaba, Google, IBM; experts also check methods where all three agree |
+| Codebook entries | vague definitions and categories of different kinds (role vs domain) overlap | definition, when to use, when not to use (MacQueen et al. 1998); one decision rule for models and experts: the task is what the method's code does |
+| A sample per revision | a codebook revised after reading a sample's disagreements, then measured on that sample, is fitted to it | each codebook or model revision gets a new, disjoint sample; every revision and its α is reported |
+| Three families | related models make the same mistakes (Kim et al., ICML 2025); a majority vote amplifies shared errors | Alibaba, Google, Mistral AI; experts also check methods where all three agree |
 | α, AC1 | kappa collapses when one category dominates (kappa paradox); more than two annotators | Krippendorff's α (≥ 0.667 tentative, ≥ 0.8 reliable), Gwet's AC1, Fleiss' κ |
 | Gate | experts' time spent on a codebook the models cannot apply | no expert files below α = 0.667 (model-model agreement as the signal: Ahmed et al., MSR 2025) |
 | Prompt check | answers can depend on the prompt (Camuffo et al. 2026) | the first model again with the codebook and examples shuffled |
@@ -93,7 +97,7 @@ The full explanation, with every problem, its solution and its sources: [METHODO
 | `results/REPORT.md` | **start here**: every step from GitHub to the expert export, with numbers and figures, and what the labelling would cost on commercial APIs |
 | `results/labelling/taxonomy.csv`, `taxonomy.md`, `labels.csv`, `curve.csv` | inductive phase: categories, labelled methods, saturation curve |
 | `results/labelling/codebook_draft.csv` → `codebook.csv` | the model's codebook draft; your consolidated codebook |
-| `results/labelling/classify/` | deductive phase: every model's answers, `labels.csv`, `agreement.json`, `gold_selection.csv` (strata and weights, not for the experts) |
+| `results/labelling/classify/` | deductive phase: every model's answers, `labels.csv`, `agreement.json`, `revisions.json` (every revision and its agreement), `gold_selection.csv` (strata and weights, not for the experts) |
 | `results/labelling/expert_validation/` | **what Pharo experts fill in** (`README.md` explains it); their files go back in `returned/<expert>/`, the agreed answers after discussion in `returned/consensus/` |
 | `results/labelling/validated/` | **the final numbers**: `final_taxonomy.md`, `validation.json`, `to_discuss.csv` |
 | `results/labelling/labels.jsonl`, `codebook.json`, `plan.json`, `rounds/` | every inductive answer, the open-coding codebook, the settings and the methods drawn per round |

@@ -622,7 +622,8 @@ def classify(cfg, args):
             models = [make_model(m, s) for m in s["classify_models"]]
         except ModelError as e:
             raise StageBlocked(str(e)) from e
-        cls = lc.Classification(out, s, pop, inductive, lambda ids: ls.method_records(db, list(ids)), log)
+        cls = lc.Classification(out, s, pop, inductive, lambda ids: ls.method_records(db, list(ids)), log,
+                                [m.name for m in models])
         log(f"Codebook ({cls.codebook_kind}): {len(cls.codebook)} categories; {len(cls.sample)} new methods; "
             f"models: {', '.join(m.name for m in models)}")
         res = cls.run(models)

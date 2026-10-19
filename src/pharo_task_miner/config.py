@@ -97,7 +97,7 @@ DEFAULTS: dict = {
                                                 # which would not fit in the model's context
         "examples_per_category": 5,             # examples per category in the expert-validation file
         # deductive phase (step 4): models of three different families classify a new sample with the codebook
-        "classify_models": ["qwen3.8:27b", "gemma4:12b", "granite4.2:8b"],
+        "classify_models": ["qwen3.8:27b", "gemma4:12b", "mistral-small3.2:24b"],
         "classify_sample_size": None,           # None = the sample-size calculator's n (384 at 95% / ±5%)
         "selfcheck_size": 100,                  # methods the first model classifies again, prompt shuffled
         "min_alpha": 0.667,                     # Krippendorff's alpha needed before the experts (tentative level)

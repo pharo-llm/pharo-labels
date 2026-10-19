@@ -7,12 +7,21 @@ codebook is given (Shah et al. 2025, inductive vs deductive coding; TnT-LLM, KDD
 the taxonomy, then classify with it). The inductive phase (step 3) builds the codebook; this
 phase measures it.
 
-1. ``codebook.csv``: the consolidated codebook. Step 3 writes ``codebook_draft.csv`` (the
-   inductive categories, a definition written by the labelling model, examples); the researcher
-   copies it to ``codebook.csv`` and consolidates it (merge, rename, define). Without
-   ``codebook.csv`` the draft is used as it is, and the report says so. "Other" is always added.
+1. ``codebook.csv``: the consolidated codebook. Step 3 writes ``codebook_draft.csv``: the
+   inductive categories still at ``min_share`` at the end of the loop (the prevalence the
+   taxonomy aims at; the others are rare names, they fall under Other), each with a definition,
+   when to use it and when not to (the codebook entry of MacQueen et al. 1998), written by the
+   labelling model, and examples. The researcher copies it to ``codebook.csv`` and consolidates
+   it (merge, rename, define). Without ``codebook.csv`` the draft is used as it is, and the
+   report says so. "Other" is always added. The prompt states one decision rule, the same as the
+   inductive phase and the experts': the task is what the method's own code does, not the
+   domain of its class.
 2. A new random sample (stratified by repository, as in step 3), disjoint from the methods the
-   codebook was built from, so the codebook is not tested on its own data.
+   codebook was built from, so the codebook is not tested on its own data. Each revision of the
+   instrument (codebook or models) is measured on a sample of its own, disjoint from the earlier
+   ones: a codebook revised after reading the disagreements of a sample would otherwise be
+   measured on the data it was fitted to. Every revision and its agreement is kept
+   (``revisions.json``) and reported.
 3. Each model of ``classify_models`` (different model families: errors of models from one family
    are correlated, Kim et al., ICML 2025) picks one category per method, independently.
 4. Agreement: Krippendorff's alpha (any number of annotators, missing answers), Fleiss' kappa,
@@ -50,7 +59,9 @@ from .saturation import _append, _read_jsonl
 OTHER = "Other"
 OTHER_DEF = "None of the categories above fits the method."
 STOP = ["\n"]
-CODEBOOK_COLS = ["category", "definition", "inductive_methods", "inductive_share", "examples"]
+CODEBOOK_COLS = ["category", "definition", "use_when", "do_not_use_when", "inductive_methods", "inductive_share", "examples"]
+RULE = ("Classify a method by what its own code does, not by the class it belongs to or the application "
+        "domain: a one-line getter of a user-interface class is an Accessor, not User interface.")
 
 
 def slug(model: str) -> str:
@@ -63,35 +74,55 @@ def _sha(text: str) -> str:
 
 # --------------------------------------------------------------------------- codebook
 DEFINE = ("Below are Pharo methods that a model labelled with the programming task category \"{name}\".\n"
-          "{examples}\n\nWrite a one-sentence definition of the category \"{name}\": what kind of programming "
-          "task it covers, general enough for any Pharo method. Answer with the definition only.")
+          "{examples}\n\nThe other categories of the codebook are: {others}.\n"
+          "Write the codebook entry of \"{name}\" in exactly three lines:\n"
+          "Definition: one sentence, what kind of programming task the category covers, general enough for any Pharo method.\n"
+          "Use when: what in a method's code shows that it belongs to \"{name}\".\n"
+          "Do not use when: the closest other categories of the list, and what makes a method belong to them instead.\n"
+          + RULE)
+_ENTRY = {"definition": r"definition", "use_when": r"use when", "do_not_use_when": r"do not use when"}
+
+
+def parse_entry(text: str) -> dict:
+    """The three fields of a codebook entry; a missing label leaves its field empty."""
+    out = {k: "" for k in _ENTRY}
+    for line in (text or "").splitlines():
+        m = re.match(r"^[#*\s-]*(definition|use when|do not use when)\**\s*:\**\s*(.*)$", line.strip(), flags=re.I)
+        if m:
+            field = {v: k for k, v in _ENTRY.items()}[m.group(1).lower()]
+            out[field] = " ".join(m.group(2).split()).strip("\"' ")
+    return out
 
 
 def draft_codebook(summary: dict, labels: list[dict], model, out: Path, log) -> Path:
-    """codebook_draft.csv from the inductive taxonomy; definitions by ``model`` (cached)."""
+    """codebook_draft.csv from the inductive taxonomy: the categories still at ``min_share`` at
+    the end; their entries by ``model`` (cached)."""
     cache_p = out / "definitions.json"
     cache = json.loads(cache_p.read_text()) if cache_p.exists() else {}
     by = defaultdict(list)
     for r in labels:
         by[r["category"]].append(r)
+    kept = [t for t in summary["taxonomy"] if t["in_taxonomy"] and not t.get("below_min_share")]
+    dropped = [t["category"] for t in summary["taxonomy"] if t["in_taxonomy"] and t.get("below_min_share")]
     rows = []
-    for t in summary["taxonomy"]:
-        if not t["in_taxonomy"]:
-            continue
+    for t in kept:
         name = t["category"]
         ex = by[name][:]
         random.Random(42).shuffle(ex)
         examples = " | ".join(f"{r['signature']}: {r['summary']}" for r in ex[:5])
-        if name not in cache and model is not None:
-            text = model.complete(DEFINE.format(name=name, examples="\n".join(
-                f"- {r['signature']}: {r['summary']}" for r in ex[:8])), 80, ["\n\n"])
-            cache[name] = " ".join(text.split()).strip("\"' ")
+        if not isinstance(cache.get(name), dict) and model is not None:
+            others = ", ".join(o["category"] for o in kept if o["category"] != name)
+            text = model.complete(DEFINE.format(name=name, others=others, examples="\n".join(
+                f"- {r['signature']}: {r['summary']}" for r in ex[:8])), 240, ["\n\n\n"])
+            cache[name] = parse_entry(text)
             write_json(cache_p, cache)
-        rows.append({"category": name, "definition": cache.get(name, ""), "inductive_methods": t["methods"],
+        entry = cache.get(name) if isinstance(cache.get(name), dict) else {}
+        rows.append({"category": name, **{k: entry.get(k, "") for k in _ENTRY}, "inductive_methods": t["methods"],
                      "inductive_share": t["share"], "examples": examples})
     p = out / "codebook_draft.csv"
     _csv(p, rows, CODEBOOK_COLS)
-    log(f"Codebook draft: {len(rows)} categories -> {p} (copy it to codebook.csv to consolidate it)")
+    log(f"Codebook draft: {len(rows)} categories -> {p} (copy it to codebook.csv to consolidate it)"
+        + (f"; below the minimum share at the end, left to Other: {', '.join(dropped)}" if dropped else ""))
     return p
 
 
@@ -110,7 +141,8 @@ def load_codebook(out: Path) -> tuple[list[dict], str]:
         name = r.get("category", "")
         if name and coding.key(name) not in seen and coding.key(name) != coding.key(OTHER):
             seen.add(coding.key(name))
-            cats.append({"category": name, "definition": r.get("definition", "")})
+            cats.append({"category": name, "definition": r.get("definition", ""),
+                         "use_when": r.get("use_when", ""), "do_not_use_when": r.get("do_not_use_when", "")})
     cats.append({"category": OTHER, "definition": OTHER_DEF})
     return cats, kind
 
@@ -128,8 +160,11 @@ def build_prompt(codebook: list[dict], method: dict, max_lines: int, max_chars: 
         rng.shuffle(cats)
         rng.shuffle(examples)
     lines = ["Each Pharo method below is classified by the programming task it performs. Choose exactly one "
-             "category of the codebook; answer Other when none fits.\n", "Codebook:"]
-    lines += [f"- {c['category']}: {c['definition']}" for c in cats + [codebook[-1]]]
+             "category of the codebook; answer Other when none fits. " + RULE + "\n", "Codebook:"]
+    for c in cats + [codebook[-1]]:
+        lines.append(f"- {c['category']}: {c['definition']}")
+        lines += [f"  {label}: {c[k]}" for k, label in (("use_when", "Use when"), ("do_not_use_when", "Do not use when"))
+                  if c.get(k)]
     text = "\n".join(lines) + "\n\n"
     for cls, src, cat in examples:
         text += f"### Method of {cls}\n{src.strip()}\n### Category: {cat}\n\n"
@@ -157,17 +192,29 @@ def parse(text: str, codebook: list[dict]) -> str | None:
 
 # --------------------------------------------------------------------------- the phase
 class Classification:
-    def __init__(self, out: Path, settings: dict, pop: dict[int, list[int]], exclude: set[int], records, log):
+    def __init__(self, out: Path, settings: dict, pop: dict[int, list[int]], exclude: set[int], records, log,
+                 models: list[str] | None = None):
         self.out, self.s, self.records, self.log = out / "classify", settings, records, log
         self.out.mkdir(parents=True, exist_ok=True)
         self.codebook, self.codebook_kind = load_codebook(out)
+        # the instrument: codebook and models; a new one is measured on a sample of its own
+        self.instrument = _sha(json.dumps([self.codebook, list(models or settings.get("classify_models") or [])]))
         p = self.out / "sample.json"
         n = int(settings["classify_sample_size"])
-        if p.exists() and json.loads(p.read_text())["size"] == n:
-            self.sample = json.loads(p.read_text())["method_ids"]
+        old = json.loads(p.read_text()) if p.exists() else None
+        if old and old["size"] == n and old.get("instrument", self.instrument) == self.instrument:
+            self.sample, self.revision = old["method_ids"], old.get("revision", 1)
         else:
-            self.sample = sampling.draw(pop, n, int(settings["random_seed"]) + 1000, exclude)
-            write_json(p, {"size": n, "method_ids": self.sample, "excluded_inductive": len(exclude)})
+            previous = (old.get("previous_method_ids", []) + old["method_ids"]) if old else []
+            self.revision = (old.get("revision", 1) + 1) if old else 1
+            self.sample = sampling.draw(pop, n, int(settings["random_seed"]) + 1000 + self.revision - 1,
+                                        set(exclude) | set(previous))
+            write_json(p, {"size": n, "method_ids": self.sample, "instrument": self.instrument,
+                           "revision": self.revision, "previous_method_ids": previous,
+                           "excluded_inductive": len(exclude)})
+            if old:
+                log(f"Codebook or models changed: revision {self.revision}, a new sample of {n} methods, "
+                    f"disjoint from the {len(previous)} methods of the earlier revisions")
 
     def prompt(self, m: dict, variant: int = 0) -> str:
         return build_prompt(self.codebook, m, self.s["max_method_lines"], self.s.get("max_method_chars"), variant)
@@ -230,6 +277,15 @@ class Classification:
                "seconds_per_method": {nm: round(sum(labels[nm][m]["seconds"] for m in self.sample) / n, 3) for nm in names}}
         unanimous = all(len(set(u)) == 1 and u[0] is not None for u in units.values())   # alpha undefined: no variation
         res["reliable"] = (alpha is not None and alpha >= res["min_alpha"]) or (alpha is None and unanimous)
+        res["revision"] = self.revision
+        rp = self.out / "revisions.json"
+        revs = [r for r in (json.loads(rp.read_text()) if rp.exists() else []) if r["revision"] != self.revision]
+        revs.append({"revision": self.revision, "instrument": self.instrument, "models": names,
+                     "codebook_kind": self.codebook_kind, "categories": len(self.codebook), "sample": n,
+                     "krippendorff_alpha": alpha, "gwet_ac1": res["gwet_ac1"], "reliable": res["reliable"],
+                     "other_share": {nm: dist[OTHER][nm] for nm in names}})
+        write_json(rp, sorted(revs, key=lambda r: r["revision"]))
+        res["revisions"] = sorted(revs, key=lambda r: r["revision"])
         write_json(self.out / "agreement.json", res)
         return res
 
@@ -288,7 +344,8 @@ both are returned.
 
 1. **method_review.csv**: {m} methods. Open the `url` (or read `source`) and write in
    `expert_category` the codebook category that fits best, or `Other` with a name in
-   `other_name`. The models' answers are not shown on purpose.
+   `other_name`. The models' answers are not shown on purpose. The rule the models followed,
+   to follow as well: {rule}
 2. **codebook_review.csv**: {n} categories with their definitions and examples.
    - `keep_yes_no`: is this a real, distinct kind of programming task in Pharo?
    - `rename_to`: a better name, if any.
@@ -306,10 +363,15 @@ NOT_RELIABLE = """# Codebook not reliable yet
 {t} (Krippendorff's threshold for tentative conclusions). Gwet's AC1 = {ac1}. No expert files
 were written: the experts would be measuring a codebook the models cannot apply consistently.
 
-What to change, then `./run.sh classify` again (answers are reused when the prompt is unchanged):
+What to change, then `./run.sh classify` again. A changed codebook or model list is a new
+revision: it is measured on a new sample, disjoint from this one, and every revision is reported
+(`classify/revisions.json`), so the codebook is never judged on the data it was revised from.
 - `classify/labels.csv`: which categories do the models confuse? Merge them, or make their
-  definitions in `codebook.csv` sharper (copy `codebook_draft.csv` first if it is not there);
-- check `agreement.json`: one model far from the others (pairs) can be replaced;
+  definitions and their "use when / do not use when" rules in `codebook.csv` sharper (copy
+  `codebook_draft.csv` first if it is not there);
+- check `agreement.json`: a model far from the others (pairs) can be replaced, for a reason
+  that is not its agreement (for example it answers Other by default: `distribution`), and the
+  reason goes in the paper;
 - a low self-check means the answers depend on the prompt order: the definitions are too vague.
 
 To send the expert files anyway, set `MIN_ALPHA=0` in run.sh (and say so in the paper).
@@ -333,15 +395,18 @@ def expert_pack(cls: Classification, res: dict, labels_inductive: list[dict], ev
         ex = by.get(c["category"], [])[:]
         random.Random(42).shuffle(ex)
         cb_rows.append({"category": c["category"], "definition": c["definition"],
+                        "use_when": c.get("use_when", ""), "do_not_use_when": c.get("do_not_use_when", ""),
                         "examples": " | ".join(f"{r['signature']}: {r['summary']}" for r in ex[:examples]),
                         "keep_yes_no": "", "rename_to": "", "merge_into": "", "definition_fix": "", "comments": ""})
         md.append(f"## {c['category']}\n\n{c['definition']}\n")
+        md += [f"*{label}:* {c[k]}\n" for k, label in (("use_when", "Use when"), ("do_not_use_when", "Do not use when"))
+               if c.get(k)]
         for r in ex[:3]:
             md.append(f"- **{r['signature']}**: {r['summary']}")
         md.append("")
     _csv(ev / "codebook_review.csv", cb_rows, list(cb_rows[0]))
     (ev / "examples.md").write_text("\n".join(md), encoding="utf-8")
-    (ev / "README.md").write_text(EXPERT_README.format(m=len(gold), n=len(names)), encoding="utf-8")
+    (ev / "README.md").write_text(EXPERT_README.format(m=len(gold), n=len(names), rule=RULE), encoding="utf-8")
     log(f"Expert files: {len(gold)} methods (" + ", ".join(f"{h}: {s['m']} of {s['N']}" for h, s in sorted(strata.items()))
         + f") -> {ev}")
     return {"methods": len(gold), "strata": strata}

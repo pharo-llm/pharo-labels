@@ -1,5 +1,5 @@
 """The language models that label methods: instruction-tuned models served by Ollama
-(qwen3.8:27b, gemma4:12b, granite4.2:8b). Each is asked through the chat API, with thinking off
+(qwen3.8:27b, gemma4:12b, mistral-small3.2:24b). Each is asked through the chat API, with thinking off
 and deterministic decoding, to continue a few-shot text.
 """
 from __future__ import annotations

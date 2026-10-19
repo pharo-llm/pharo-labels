@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pharo_task_miner.cli import main  # noqa: E402
+from pharo_task_miner.labelling import classify as lc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -150,6 +151,7 @@ class PipelineTest(unittest.TestCase):
             draft = list(csv.DictReader((lab / "codebook_draft.csv").open()))
             self.assertEqual({r["category"] for r in draft} - {"Collection filtering"}, {"Accessor"})
             self.assertTrue(all(r["definition"].startswith("Methods that") for r in draft))
+            self.assertTrue(all(r["use_when"] and r["do_not_use_when"] for r in draft))
             # deductive phase: three stand-in models that always agree
             with mock.patch("pharo_task_miner.labelling.models.make_model",
                             lambda spec, s: FakeModel(spec)):
@@ -163,6 +165,8 @@ class PipelineTest(unittest.TestCase):
                 self.assertTrue((lab / "expert_validation" / f).exists(), f)
             review = list(csv.DictReader((lab / "expert_validation" / "method_review.csv").open()))
             self.assertNotIn("majority", review[0])                     # blind: no model answer shown
+            self.assertIn(lc.RULE, (lab / "expert_validation" / "README.md").read_text())   # experts follow the models' rule
+            self.assertEqual(json.loads((lab / "classify" / "revisions.json").read_text())[0]["revision"], 1)
             # two experts return their files; validation
             for e in ("ann", "bob"):
                 d = lab / "expert_validation" / "returned" / e
@@ -199,8 +203,9 @@ class FakeModel:
         return {"backend": "fake"}
 
     def complete(self, prompt, max_tokens, stop):
-        if "one-sentence definition" in prompt:
-            return "Methods that do this kind of task."
+        if "Write the codebook entry" in prompt:
+            return ("Definition: Methods that do this kind of task.\nUse when: the code does it.\n"
+                    "Do not use when: another category fits better.")
         task = "Collection filtering" if "select:" in prompt.rsplit("### Method of", 1)[1] else "Accessor"
         if "Codebook:" in prompt:
             return task

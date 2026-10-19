@@ -36,11 +36,13 @@ mine → filter → one model labels a sample (open coding) until saturation
 1. mine       GitHub → filter 1 (is this real Pharo code?)
 2. filter     filter 2 → 135 repositories, ~280,000 methods
 3. label      INDUCTIVE: qwen3.8 names the task of each sampled method until saturation
-              → codebook_draft.csv: the categories + a definition written by the model
+              → codebook_draft.csv: the categories still at ≥ 0.5% at the end, each with a
+                definition, "use when" and "do not use when" written by the model
    [you]      copy it to codebook.csv and consolidate it (merge, rename, define)
-4. classify   DEDUCTIVE: qwen3.8 + gemma4 + granite4.2 classify a NEW random sample (384)
+4. classify   DEDUCTIVE: qwen3.8 + gemma4 + mistral-small3.2 classify a NEW random sample (384)
               → Krippendorff's α, Gwet's AC1, Fleiss' κ, prompt-sensitivity check
-              → α < 0.667: stop, NOT_RELIABLE.md
+              → α < 0.667: stop, NOT_RELIABLE.md; a revised codebook or model list is a new
+                revision, measured on a new sample disjoint from the earlier ones
               → α ≥ 0.667: 200 methods for the experts, stratified by agreement level
 5. validate   two experts classify the 200 methods blind, each alone
               → accuracy of each model (95% CI), experts' agreement (human baseline),
@@ -73,7 +75,7 @@ The models had to fit in memory, be recent, and come from **different companies*
 |---|---|---|---|
 | `qwen3.8:27b` | Alibaba | 18 GB | open coding (step 3), codebook definitions, classifier 1 (step 4) |
 | `gemma4:12b` | Google | 8 GB | classifier 2 |
-| `granite4.2:8b` | IBM | 5 GB | classifier 3 |
+| `mistral-small3.2:24b` | Mistral AI | 15 GB | classifier 3 (replaces `granite4.2:8b` (IBM) after the first run: Problem 14) |
 
 Qwen3.8-27B was chosen as the strongest model that fits: in a recent local comparison it beat
 Qwen3.6-27B and Gemma 4 31B on coding, reasoning and document QA, with equal instruction following
@@ -160,7 +162,7 @@ whether agreement predicts correctness (RQ3).
 similar data make *correlated* errors: if they agree, they may agree on the same wrong answer.
 
 **Solution.**
-1. The three models come from **three different companies** (Alibaba, Google, IBM), to reduce shared
+1. The three models come from **three different companies** (Alibaba, Google, Mistral AI), to reduce shared
    training data and architecture.
 2. The expert sample includes methods where **all three models agree** (stratum `3/3`), not only
    disagreements: that is where shared errors hide. The report shows the accuracy inside each
@@ -349,6 +351,101 @@ human judgement, state limitations.
 
 ---
 
+### Problem 14: one classifier answered "Other" by default (first run, 2026-10-19)
+
+**What was wrong.** The first run on the real corpus (draft codebook, 34 categories, 384 new
+methods) gave Krippendorff's α = 0.409, below the gate. Most of the gap came from one model:
+`granite4.2:8b` answered **Other for 52% of the methods** (200 of 384), against 2.6% for qwen3.8
+and 8.1% for gemma4. That includes 63 methods qwen3.8 labelled Accessor and 16 it labelled Unit
+test (test methods, the easiest case of the codebook), many answered in about 0.1 s. The prompt was
+not cut (8,192-token context, `models.py`). Without granite, qwen3.8 and gemma4 agree at Cohen's
+κ = 0.669; each of them with granite, κ ≈ 0.30.
+
+**Solution.** granite4.2:8b is replaced by `mistral-small3.2:24b` (Mistral AI): a fourth company, so
+the three classifiers still come from three families (Problem 5), and an instruction-tuned model
+with a published instruction-following score (IFEval 0.829 for Mistral Small 24B Instruct 2501,
+model card; release 3.2 is described by Mistral as better at following precise instructions).
+15 GB, it fits the 36 GB machine; models are run one after the other.
+
+**How the choice avoids fitting the result.** Replacing models until α passes would be a garden of
+forking paths. So: (1) the reason is a failure that does not depend on agreement (a default answer,
+measured by the share of Other); (2) the replacement was chosen from published information before
+it was run; (3) the new configuration is measured on a **new sample** (Problem 16); (4) the granite
+run is reported here and every revision is listed in the report (`classify/revisions.json`).
+
+**Sources.** Baltes et al. (EMSE): report every model used and why it was changed. Mistral Small 24B
+Instruct model card (https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501).
+
+---
+
+### Problem 15: the codebook mixed kinds of categories, with one-sentence definitions
+
+**What was wrong.** In the first run, the most frequent disagreements between qwen3.8 and gemma4
+were Accessor vs Abstract method (13 methods), User interface vs Abstract method, Configuration vs
+Accessor / Predicate. Some categories name the *role* of a method (Accessor, Abstract method,
+Visitor pattern, Predicate), others its *domain* (User interface, Parsing, Version control): a
+one-line getter of a UI class fits both, and a one-sentence definition does not say which wins.
+Also, 14 of the 33 categories had entered the taxonomy early but were below 0.5% at the end of the
+loop; they were still in the codebook.
+
+**Solution.**
+1. **Only categories still at ≥ 0.5% at the end go into the codebook draft** (19 in the first run).
+   This is the definition the taxonomy already uses (Problem 12: the taxonomy aims at every task
+   with a prevalence of at least 0.5%); the others become Other, and stay listed in `taxonomy.csv`
+   for the experts. LLM-generated taxonomies tend to be over-complex (Nakashima et al., ASE 2026).
+2. **Every codebook entry has a definition, "use when" and "do not use when"**, the codebook entry
+   of MacQueen et al. (1998), written by the labelling model from the methods of the category and
+   the list of the other categories, then consolidated by the researcher. Tested live on qwen3.8:
+   the User interface entry says "do not use when the method merely retrieves or sets a single
+   value (Accessor)".
+3. **One decision rule**, stated in the classification prompt and in the experts' README: *classify
+   a method by what its own code does, not by the class it belongs to or the application domain.*
+   This is not a new construct: the open-coding prompt of step 3 already asks for "the kind of
+   programming task (not the application domain)". Giving the experts the same rule matters: if
+   models and experts applied different rules, the accuracy of step 5 would measure the rule, not
+   the models.
+
+**Sources.** MacQueen, McLellan, Kay, Milstein (1998), codebook structure; Hruschka et al. (2004),
+iterative revision of a codebook until intercoder reliability is acceptable; Nakashima et al. (ASE
+2026). **To validate:** the decision rule and the entries are the researcher's and the experts'
+to confirm (`codebook.csv`, `codebook_review.csv`).
+
+---
+
+### Problem 16: revising the codebook on the sample that measures it
+
+**What was wrong.** NOT_RELIABLE.md asks the researcher to read the disagreements of the classified
+sample and revise the codebook. Measuring the revised codebook on the same 384 methods fits the
+codebook to them: the α would be optimistic, the same double dipping as Problem 3.
+
+**Solution.** The *instrument* is the codebook plus the list of models. When it changes, step 4 draws
+a **new** sample of the same size, disjoint from step 3 and from every earlier revision (another seed
+per revision, recorded in `classify/sample.json`). When nothing changed, the same sample and the
+stored answers are reused. Every revision, with its α, AC1 and share of Other per model, is kept in
+`classify/revisions.json` and shown in the report. The expert sample is drawn from the last
+revision. A test checks that three revisions get three disjoint samples.
+
+**Source.** The train/test separation of Problem 3 applied to each revision; Hruschka et al. (2004)
+for revising in rounds; Baltes et al. (EMSE) for reporting every attempt.
+
+---
+
+### Problem 17: saturation of the categories is not saturation of the names
+
+**What it is.** In the first run, 32 of the 33 categories were already in the initial 384 methods,
+and the loop stopped after 13 rounds. But the candidate names (below the support threshold) kept
+growing, from 45 to 100, and 13.6% of the labelled methods had a name too rare to be a category.
+The categories saturated because of the 0.5% threshold, by design; the long tail did not.
+
+**Solution.** The report now says so, with a number: the Good–Turing estimate of the probability that
+the next method gets a name never seen before (names given to exactly one method / methods labelled).
+It is the size of what the taxonomy leaves under Other on purpose.
+
+**Source.** Good, I. J. (1953), *The population frequencies of species and the estimation of
+population parameters*, Biometrika 40.
+
+---
+
 ## 3. Summary table
 
 | # | Problem | Solution | Main source |
@@ -366,16 +463,23 @@ human judgement, state limitations.
 | 11 | Biased category shares | Prediction-powered inference | Angelopoulos et al. (Science 2023); Egami et al. (NeurIPS 2023) |
 | 12 | When to stop | Prevalence-based saturation (kept) | De Paoli & Mathis (Q&Q) |
 | 13 | Reproducibility | Every answer stored; full reporting | Baltes et al. (EMSE) |
+| 14 | A classifier answering Other by default | granite4.2 replaced by mistral-small3.2, for a reason independent of α; reported | Baltes et al. (EMSE); model card |
+| 15 | Overlapping categories, thin definitions | Categories ≥ 0.5% only; definition, use when, do not use when; one decision rule for models and experts | MacQueen et al. (1998); Hruschka et al. (2004) |
+| 16 | Codebook revised on its own test sample | A new disjoint sample per revision; every revision reported | Problem 3; Hruschka et al. (2004) |
+| 17 | Saturation of categories ≠ of names | Good–Turing estimate of unseen names in the report | Good (1953) |
 
 ---
 
 ## 4. How the work was checked
 
-- **63 automated tests pass**, including:
+- **66 automated tests pass**, including:
   - Krippendorff's α = 0.743 and Fleiss' κ = 0.210 on the published reference examples;
   - the kappa paradox case (κ low, AC1 high);
   - the PPI simulation (unbiased, interval coverage close to 95%);
   - the stratified accuracy;
+  - codebook entries (three fields), the draft leaving categories below 0.5% to Other, the
+    decision rule in the prompt and in the experts' README, and three revisions getting three
+    disjoint samples;
   - a full run with stand-in models and two stand-in experts, from `label` to `validate` and the
     report, checking that the step-4 sample never overlaps step 3 and that experts never see the
     models' answers.
@@ -385,8 +489,14 @@ human judgement, state limitations.
 
 ## 5. Limitations and open points
 
-- **No run on the real corpus yet.** The `results/` folder became empty during the session (it was
-  moved, not by the pipeline); recover it or run `./run.sh pull`.
+- **One run on the real corpus so far (2026-10-19)**, before Problems 14-17: α = 0.409, gate not
+  passed. Its numbers are quoted in Problems 14, 15 and 17; the next run uses the changes.
+- **The labelling model is also a classifier.** qwen3.8 named the categories and wrote the codebook,
+  then classifies with it: it may agree with its own codebook more easily than the other models
+  (home advantage). The experts' blind classification is what measures every model on equal terms;
+  report qwen3.8's accuracy next to the others', not only the majority's.
+- **Accessors dominate** (about 30% in step 3, 16-24% in step 4). A trivial category inflates raw
+  agreement; Gwet's AC1 and the per-category precision/recall of step 5 are the numbers to read.
 - **The codebook must be consolidated by the researcher** after step 3. Without `codebook.csv`, the
   model's draft is used and the report says so.
 - **Majority vote, not Dawid-Skene.** Dawid-Skene would weight each model by its estimated
@@ -447,5 +557,15 @@ human judgement, state limitations.
     Social Media Content.* arXiv 2602.11962, 2026. https://arxiv.org/html/2602.11962
 21. *Wisdom and Delusion of LLM Ensembles for Code Generation and Repair.* arXiv 2510.21513.
     https://arxiv.org/html/2510.21513
-22. Model comparison used for the model choice: *Qwen3.8 vs Qwen3.6 vs Gemma 4: 24GB GPU Test*,
+22. Good, I. J. *The population frequencies of species and the estimation of population parameters.*
+    Biometrika 40(3-4), 1953.
+23. Hruschka, D. J., Schwartz, D., St. John, D. C., Picone-Decaro, E., Jenkins, R. A., Carey, J. W.
+    *Reliability in coding open-ended data: lessons learned from HIV behavioral research.* Field
+    Methods 16(3), 307-331, 2004.
+24. MacQueen, K. M., McLellan, E., Kay, K., Milstein, B. *Codebook development for team-based
+    qualitative analysis.* Cultural Anthropology Methods 10(2), 31-36, 1998.
+    https://doi.org/10.1177/1525822X980100020301
+25. Mistral AI. *Mistral-Small-24B-Instruct-2501* model card (IFEval 0.829).
+    https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501
+26. Model comparison used for the model choice: *Qwen3.8 vs Qwen3.6 vs Gemma 4: 24GB GPU Test*,
     kingy.ai, August 2026. https://kingy.ai/blog/qwen3-8-27b-vs-qwen3-6-27b-vs-gemma-4-31b/

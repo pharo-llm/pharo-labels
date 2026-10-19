@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pharo_task_miner.labelling import coding, cost, sampling, saturation  # noqa: E402
+from pharo_task_miner.labelling import classify, coding, cost, sampling, saturation  # noqa: E402
 
 
 class SampleSizeTests(unittest.TestCase):
@@ -228,6 +228,55 @@ class SaturationTests(unittest.TestCase):
         saturation.prepare(out, {**self.s, "model": "other"}, lambda m: None)
         self.assertFalse((out / "labels.jsonl").exists())
         self.assertEqual(len(list(self.tmp.glob("lab3.before-*"))), 1)
+
+
+class ClassifyCodebookTests(unittest.TestCase):
+    def test_entry_has_three_fields(self):
+        e = classify.parse_entry("**Definition:** Gets or sets a variable.\nUse when: one line reads a variable.\n"
+                                 "Do not use when: it computes a value (Numeric computation).")
+        self.assertEqual(e["definition"], "Gets or sets a variable.")
+        self.assertEqual(e["use_when"], "one line reads a variable.")
+        self.assertTrue(e["do_not_use_when"].startswith("it computes"))
+        self.assertEqual(classify.parse_entry("no labels")["definition"], "")
+
+    def test_draft_leaves_categories_below_the_share_to_other(self):
+        summary = {"taxonomy": [
+            {"category": "Accessor", "in_taxonomy": True, "below_min_share": False, "methods": 30, "share": 0.3},
+            {"category": "Hashing", "in_taxonomy": True, "below_min_share": True, "methods": 1, "share": 0.004},
+            {"category": "Sorting", "in_taxonomy": False, "below_min_share": False, "methods": 1, "share": 0.004}]}
+
+        class M:
+            def complete(self, prompt, n, stop):
+                self.prompt = prompt
+                return "Definition: d.\nUse when: u.\nDo not use when: n."
+        m = M()
+        with tempfile.TemporaryDirectory() as tmp:
+            classify.draft_codebook(summary, [], m, Path(tmp), lambda x: None)
+            cats, kind = classify.load_codebook(Path(tmp))
+        self.assertEqual([c["category"] for c in cats], ["Accessor", "Other"])
+        self.assertEqual((cats[0]["use_when"], cats[0]["do_not_use_when"]), ("u.", "n."))
+        self.assertEqual(kind, "draft")
+        self.assertIn(classify.RULE, m.prompt)
+        prompt = classify.build_prompt(cats, {"class_name": "P", "source": "x\n\t^ x"}, 40, None)
+        self.assertIn("Use when: u.", prompt)
+        self.assertIn(classify.RULE, prompt)
+
+    def test_each_revision_gets_a_new_disjoint_sample(self):
+        pop = {r: list(range(r * 1000, r * 1000 + 300)) for r in range(3)}
+        s = {"classify_sample_size": 40, "random_seed": 42}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "codebook.csv").write_text("category,definition\nAccessor,a\n")
+            c1 = classify.Classification(out, s, pop, {0, 1}, None, lambda x: None, ["a", "b"])
+            again = classify.Classification(out, s, pop, {0, 1}, None, lambda x: None, ["a", "b"])
+            self.assertEqual(c1.sample, again.sample)                  # same instrument: same sample, answers reused
+            (out / "codebook.csv").write_text("category,definition\nAccessor,a getter or setter\n")
+            c2 = classify.Classification(out, s, pop, {0, 1}, None, lambda x: None, ["a", "b"])
+            c3 = classify.Classification(out, s, pop, {0, 1}, None, lambda x: None, ["a", "c"])
+        self.assertEqual((c1.revision, c2.revision, c3.revision), (1, 2, 3))
+        self.assertFalse(set(c1.sample) & set(c2.sample))
+        self.assertFalse((set(c1.sample) | set(c2.sample)) & set(c3.sample))
+        self.assertFalse({0, 1} & set(c3.sample))
 
 
 class CostTests(unittest.TestCase):

@@ -48,8 +48,10 @@ MIN_SHARE="${MIN_SHARE:-0.005}"             # ... and its share of the labelled 
 EMBED_MODEL="${EMBED_MODEL:-all-minilm}"
 
 # --- step 4: deductive classification
-# Three models of three families (Alibaba, Google, IBM): errors of related models are correlated.
-CLASSIFY_MODELS="${CLASSIFY_MODELS:-qwen3.8:27b gemma4:12b granite4.2:8b}"
+# Three models of three families (Alibaba, Google, Mistral AI): errors of related models are correlated.
+# granite4.2:8b (IBM) was replaced after the first run: it answered Other for 52% of the methods
+# (METHODOLOGY.md, problem 14).
+CLASSIFY_MODELS="${CLASSIFY_MODELS:-qwen3.8:27b gemma4:12b mistral-small3.2:24b}"
 MIN_ALPHA="${MIN_ALPHA:-0.667}"             # Krippendorff's alpha needed before the experts (0.8 = reliable)
 GOLD_SIZE="${GOLD_SIZE:-200}"               # methods the experts classify (about ±5% on accuracy)
 

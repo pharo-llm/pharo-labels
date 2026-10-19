@@ -102,6 +102,9 @@ def export(run, plan: dict, out: Path, figures: Path, log) -> dict:
             md.append("```smalltalk\n" + coding.method_source(rec, 25) + "\n```\n")
     (out / "taxonomy.md").write_text("\n".join(md), encoding="utf-8")
     candidates = sum(1 for n, c in run.codebook.cats.items() if not run.codebook.in_taxonomy(n) and c["support"] > 0)
+    # Good (1953): the share of methods whose name was seen exactly once estimates the probability
+    # that the next method gets a name never seen before (the unseen mass of the long tail)
+    singletons = sum(1 for c in run.codebook.cats.values() if c["support"] == 1)
 
     # ------------------------------------------------------------------ figures
     figs = _figures(run.curve, rows, taxonomy, figures, plan, log)
@@ -113,6 +116,7 @@ def export(run, plan: dict, out: Path, figures: Path, log) -> dict:
         "seed_categories": coding.SEED_CATEGORIES, "unused_seed_categories": unused_seeds,
         "candidates": candidates, "no_answer": len(by_cat.get(NO_ANSWER, [])),
         "rare_names": len(by_cat.get(UNCLASSIFIED, [])),
+        "singleton_names": singletons, "unseen_name_probability": round(singletons / n_all, 4) if n_all else None,
         "labelled_tests": sum(r["is_test"] for r in labels), "repositories_covered": len({r["repository"] for r in labels}),
         "seconds_per_method": round(sum(r["seconds"] for r in labels) / n_all, 3) if n_all else None,
         "margin_of_error_all_labelled": round(sampling.margin_for(n_all, N, conf), 4),
