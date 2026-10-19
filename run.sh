@@ -5,14 +5,18 @@
 #     1. mine     GitHub search -> Pharo verification -> FILTER 1 (6 criteria) -> clone -> parse
 #                 (downloads the Hugging Face snapshot instead when there are no local results)
 #     2. filter   FILTER 2 (13 criteria): the study corpus, ~135 repositories / ~280,000 methods
-#     3. label    sample-size calculator -> small model labels the sample (open coding) ->
-#                 saturation loop over new methods -> check model -> expert-validation export
-#     4. report   results/REPORT.md: every number of steps 1-3, with figures, and what the
+#     3. label    INDUCTIVE: sample-size calculator -> a model names the task of each method (open
+#                 coding) -> saturation loop -> codebook_draft.csv (categories + definitions)
+#                 [you: copy it to results/labelling/codebook.csv and consolidate it]
+#     4. classify DEDUCTIVE: 3 models (3 families) classify a NEW sample with the codebook ->
+#                 Krippendorff's alpha >= MIN_ALPHA ? expert files (stratified) : NOT_RELIABLE.md
+#     5. validate the experts' files (expert_validation/returned/<expert>/) -> accuracy of each model,
+#                 the experts' agreement, the share of each task corrected by the experts (PPI)
+#     6. report   results/REPORT.md: every number of steps 1-5, with figures, and what the
 #                 labelling would cost on commercial APIs (prices in config.yaml, api_cost)
-#   ./run.sh mine | filter | label | report     one step only
+#   ./run.sh mine | filter | label | classify | validate | report     one step only
 #   ./run.sh status                             what the database holds
 #   ./run.sh pull | push                        get / save all results on Hugging Face
-#   MODELS="0.5B 1.5B 3b 7b" ./run.sh           steps 3-4 once per model (see MODELS below)
 #
 # Everything goes to results/ (start with results/REPORT.md); the experts' files are in
 # results/labelling/expert_validation/. Tokens are asked once and kept in .env (git-ignored).
@@ -24,18 +28,10 @@ USE_SNAPSHOT="${USE_SNAPSHOT:-auto}"        # auto = local results, else the Hug
 SNAPSHOT_VERSION="${SNAPSHOT_VERSION:-}"    # "" = latest, or a tag like snapshot-20261010-182354
 ALLOW_GITHUB_MINING="${ALLOW_GITHUB_MINING:-yes}"   # no = never clone or search GitHub
 
-# --- step 3: labelling
-# The model that labels. An Ollama tag (Pharo models: pharo-llm/Qwen2.5-Coder-SFT:0.5B, :1.5B,
-# :3b, :7b), or a Hugging Face model as hf:<repo>[@revision], e.g. the continued-pretraining
-# adapters hf:pharo-llm/Qwen2.5-Coder-1.5B-PT (0.5B, 1.5B, 3B, 7B; the last checkpoint is used).
-MODEL="${MODEL:-pharo-llm/Qwen2.5-Coder-SFT:1.5B}"
-# Several labelling models, one after the other ("" = MODEL only). A size alone (0.5B, 1.5B, 3b, 7b)
-# means that Pharo model. Each model's labelling, figures and report go to results/models/<model>/,
-# and results/models/COMPARISON.md compares them; an interrupted run resumes the model it was on.
-MODELS="${MODELS:-}"
-# A second model codes the review subset on its own; their agreement is in the report. none = skip.
-# With MODELS, the check model of the check model itself is the model listed before it.
-CHECK_MODEL="${CHECK_MODEL:-pharo-llm/Qwen2.5-Coder-SFT:7b}"
+# --- step 3: inductive labelling
+# The model that names the tasks (open coding) and writes the codebook definitions: qwen3.8:27b
+# (Alibaba, 18 GB, runs in 36 GB of unified memory), through Ollama, thinking off.
+MODEL="${MODEL:-qwen3.8:27b}"
 CONFIDENCE="${CONFIDENCE:-0.95}"            # sample-size calculator: confidence level
 MARGIN="${MARGIN:-0.05}"                    #                         margin of error
 SAMPLE_SIZE="${SAMPLE_SIZE:-}"              # "" = computed (384 for 280,000 methods at 95% / ±5%)
@@ -50,6 +46,12 @@ MIN_SHARE="${MIN_SHARE:-0.005}"             # ... and its share of the labelled 
 # Small embedding model that merges task names with the same meaning ("Calculation" = "Computation").
 # Without it, the open codes of a small model never saturate. none = merge by spelling only.
 EMBED_MODEL="${EMBED_MODEL:-all-minilm}"
+
+# --- step 4: deductive classification
+# Three models of three families (Alibaba, Google, IBM): errors of related models are correlated.
+CLASSIFY_MODELS="${CLASSIFY_MODELS:-qwen3.8:27b gemma4:12b granite4.2:8b}"
+MIN_ALPHA="${MIN_ALPHA:-0.667}"             # Krippendorff's alpha needed before the experts (0.8 = reliable)
+GOLD_SIZE="${GOLD_SIZE:-200}"               # methods the experts classify (about ±5% on accuracy)
 
 # --- sharing
 PUSH_SNAPSHOT="${PUSH_SNAPSHOT:-no}"        # yes = upload all results to Hugging Face at the end
@@ -108,13 +110,10 @@ ollama_up() {
   curl -sf "http://${host#http://}/api/tags" >/dev/null || { echo "Ollama does not answer at $host."; exit 1; }
 }
 
-prepare_model() {   # make the model usable: Ollama pull, or the Hugging Face packages
+prepare_model() {   # make the Ollama model usable: start Ollama, pull the model once
   local m="$1"
   case "$m" in
     ""|none|no|off) return 0 ;;
-    hf:*)
-      .venv/bin/python -c 'import torch, transformers, peft' 2>/dev/null || {
-        echo "Installing torch, transformers and peft for $m …"; .venv/bin/pip install -q -e '.[hf]'; } ;;
     *)
       ollama_up "$m"
       ollama list | awk 'NR>1 {print $1}' | grep -qx -e "$m" -e "$m:latest" || { echo "Downloading $m …"; ollama pull "$m"; } ;;
@@ -166,11 +165,10 @@ do_filter() {
 }
 
 do_label() {
-  step "3. Labelling: sample, saturation loop, expert-validation export"
+  step "3. Inductive labelling: sample, saturation loop, codebook draft"
   prepare_model "$MODEL"
-  prepare_model "$CHECK_MODEL"
   prepare_model "$EMBED_MODEL"
-  local args=(--model "$MODEL" --check-model "${CHECK_MODEL:-none}" --confidence "$CONFIDENCE" --margin "$MARGIN"
+  local args=(--model "$MODEL" --confidence "$CONFIDENCE" --margin "$MARGIN"
               --batch-size "$BATCH_SIZE" --max-rounds "$MAX_ROUNDS" --min-support "$MIN_SUPPORT" --min-share "$MIN_SHARE"
               --embedding-model "${EMBED_MODEL:-none}")
   [ -n "$SAMPLE_SIZE" ] && args+=(--sample-size "$SAMPLE_SIZE")
@@ -178,59 +176,24 @@ do_label() {
   run_logged "$MINER" label "${args[@]}" || { echo "Stopped: rerun ./run.sh label to continue (log: $LOG)"; exit 1; }
 }
 
+do_classify() {
+  step "4. Deductive classification: $CLASSIFY_MODELS"
+  local m
+  for m in $CLASSIFY_MODELS; do prepare_model "$m"; done
+  [ -f results/labelling/codebook.csv ] || echo "Note: no results/labelling/codebook.csv: the model's draft codebook is used as it is."
+  run_logged "$MINER" classify --models "$CLASSIFY_MODELS" --min-alpha "$MIN_ALPHA" --gold-size "$GOLD_SIZE" \
+    || { echo "Stopped: rerun ./run.sh classify to continue (log: $LOG)"; exit 1; }
+}
+
+do_validate() {
+  step "5. Expert answers: accuracy, agreement, corrected shares"
+  run_logged "$MINER" validate || { echo "Stopped (log: $LOG)"; exit 1; }
+}
+
 do_report() {
-  step "4. Report"
+  step "6. Report"
   run_logged "$MINER" report
   echo "Open: results/REPORT.md    Experts: results/labelling/expert_validation/README.md"
-}
-
-model_dir() { printf 'results/models/%s' "$(printf '%s' "$1" | tr '/:@' '___')"; }
-
-park_labelling() {   # results/labelling -> results/models/<its model>/labelling
-  [ -f results/labelling/plan.json ] || return 0
-  local m dir
-  m=$(.venv/bin/python -c 'import json,sys; print(json.load(open(sys.argv[1]))["settings"]["model"])' results/labelling/plan.json)
-  dir=$(model_dir "$m")
-  if [ -e "$dir/labelling" ]; then echo "Not moving results/labelling: $dir/labelling already exists."; return 0; fi
-  mkdir -p "$dir"; mv results/labelling "$dir/labelling"
-}
-
-do_label_models() {   # steps 3-4 for every model of MODELS, each in results/models/<model>/
-  local m i dir list=() model0=$MODEL check0=$CHECK_MODEL
-  for m in $MODELS; do [[ "$m" == */* || "$m" == *:* ]] || m="pharo-llm/Qwen2.5-Coder-SFT:$m"; list+=("$m"); done
-  park_labelling
-  for i in "${!list[@]}"; do
-    MODEL=${list[$i]}; CHECK_MODEL=$check0; dir=$(model_dir "$MODEL")
-    if [ "$CHECK_MODEL" = "$MODEL" ]; then
-      if (( i > 0 )); then CHECK_MODEL=${list[$((i-1))]}; else CHECK_MODEL=${list[1]:-none}; fi
-    fi
-    step "Model $((i+1))/${#list[@]}: $MODEL (check model: $CHECK_MODEL)"
-    mkdir -p "$dir"
-    [ -d "$dir/labelling" ] && [ ! -e results/labelling ] && mv "$dir/labelling" results/labelling
-    do_label; do_report
-    mv results/labelling "$dir/labelling"
-    rm -rf "$dir/figures"; [ -d results/figures ] && cp -R results/figures "$dir/figures"
-    cp results/REPORT.md "$dir/REPORT.md"
-  done
-  MODEL=$model0; CHECK_MODEL=$check0
-  .venv/bin/python - "${list[@]}" <<'PY' | tee results/models/COMPARISON.md
-import json, sys
-from pathlib import Path
-print("# Labelling models compared\n")
-print("| Model | Methods labelled | Rounds | Stop | Categories | Rare names | No answer | s/method | Check model | Agreement | Cohen's kappa |")
-print("|---|---|---|---|---|---|---|---|---|---|---|")
-for m in sys.argv[1:]:
-    d = Path("results/models") / m.replace("/", "_").replace(":", "_").replace("@", "_") / "labelling"
-    try:
-        s, p = json.loads((d / "summary.json").read_text()), json.loads((d / "plan.json").read_text())
-    except (OSError, ValueError):
-        print(f"| {m} | not labelled | | | | | | | | | |"); continue
-    a = s.get("agreement") or {}
-    print(f"| [{m}]({d.parent.name}/REPORT.md) | {s['methods_labelled']} | {s['rounds']} | {p.get('result', {}).get('stop_reason', '')} "
-          f"| {s['categories']} | {s['rare_names']} | {s['no_answer']} | {s['seconds_per_method']} "
-          f"| {a.get('model', '-')} | {a.get('agreement', '-')} | {a.get('cohen_kappa', '-')} |")
-print("\nEach model's taxonomy: `<model>/labelling/taxonomy.md`; its expert files: `<model>/labelling/expert_validation/`.")
-PY
 }
 
 # ---------------------------------------------------------------------------- main
@@ -238,15 +201,17 @@ setup_python
 mkdir -p results
 case "${1:-all}" in
   all)    do_mine; do_filter
-          if [ -n "$MODELS" ]; then do_label_models; else do_label; do_report; fi
-          push_snapshot "Labelling: ${MODELS:-$MODEL}" ;;
+          do_label; do_classify; do_validate; do_report
+          push_snapshot "Labelling: $MODEL" ;;
   mine)   do_mine ;;
   filter) do_filter ;;
-  label)  if [ -n "$MODELS" ]; then do_label_models; else do_label; fi ;;
+  label)  do_label ;;
+  classify) do_classify ;;
+  validate) do_validate ;;
   report) do_report ;;
   status) "$MINER" status ;;
   pull)   shift; "$MINER" snapshot pull "$@" ;;
   push)   PUSH_SNAPSHOT=yes; push_snapshot "Results" ;;
-  -h|--help|help) sed -n '2,19p' "$0" ;;
-  *) echo "Unknown step '$1'."; sed -n '2,19p' "$0"; exit 1 ;;
+  -h|--help|help) sed -n '2,22p' "$0" ;;
+  *) echo "Unknown step '$1'."; sed -n '2,22p' "$0"; exit 1 ;;
 esac

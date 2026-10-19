@@ -107,12 +107,14 @@ def method_block(method: dict, max_lines: int = 40, max_chars: int | None = None
     return _block(cls, method_source(method, max_lines, max_chars))
 
 
-_TASK = re.compile(r"\n?#*\s*Task\s*:\s*(.*)", re.IGNORECASE)
+_TASK = re.compile(r"\n?[#*\s]*Task\**\s*:[*\s]*(.*)", re.IGNORECASE)
+_SUMMARY = re.compile(r"^[#*\s]*Summary\**\s*:[*\s]*", re.IGNORECASE)
 
 
 def parse_answer(text: str) -> tuple[str, str | None]:
-    """(summary, task name or None) from a completion that starts after "### Summary:"."""
-    text = (text or "").strip()
+    """(summary, task name or None) from a completion that starts after "### Summary:" (a chat
+    model may repeat that heading, or put it in bold)."""
+    text = _SUMMARY.sub("", (text or "").strip())
     m = _TASK.search(text)
     if not m:
         return text.splitlines()[0].strip() if text else "", None

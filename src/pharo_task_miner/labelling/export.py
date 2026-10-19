@@ -1,21 +1,17 @@
-"""Final taxonomy, statistics, figures and the files Pharo experts fill in.
+"""Results of the inductive phase (step 3): the categories found, statistics and figures.
+They are the material of the codebook (``classify.draft_codebook``); the shares of the corpus
+that the paper reports come from step 4 and the experts (``validation``), not from here.
 
 ``results/labelling/``
-  taxonomy.csv / taxonomy.md      the categories with their share of the corpus (95% Wilson
-                                  intervals, finite population correction) and examples
-  labels.csv                      every labelled method with its final category
+  taxonomy.csv / taxonomy.md      the categories with their share of the labelled methods (95%
+                                  Wilson intervals, finite population correction) and examples
+  labels.csv                      every labelled method with its category
   summary.json                    the numbers the report uses
-``results/labelling/expert_validation/``
-  README.md                       what to do, for the experts
-  taxonomy_review.csv             one row per category: keep / rename / merge / split / definition
-  method_review.csv               labelled methods to judge one by one (with the check model's label)
-  candidate_review.csv            names proposed too rarely to become categories
-  examples.md                     every category with example methods and their source code
 ``results/figures/``              saturation_curve.png, category_distribution.png
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 import csv
 import json
 from pathlib import Path
@@ -45,7 +41,7 @@ def final_category(run, row: dict) -> str:
     return run.codebook.final(row["raw_task"]) or UNCLASSIFIED
 
 
-def export(run, plan: dict, check_rows: list[dict] | None, out: Path, figures: Path, log) -> dict:
+def export(run, plan: dict, out: Path, figures: Path, log) -> dict:
     labels = list(run.labels.values())
     recs = run.records([r["method_id"] for r in labels])
     N = plan["population"]["methods"]
@@ -89,74 +85,23 @@ def export(run, plan: dict, check_rows: list[dict] | None, out: Path, figures: P
              "summary": r["summary"], "proposed_task": r["raw_task"], "category": r["category"]} for r in labels]
     _csv(out / "labels.csv", flat, list(flat[0]) if flat else [])
 
-    # ------------------------------------------------------------------ check model agreement
-    agreement = None
-    check_by = {c["method_id"]: c for c in (check_rows or [])}
-    if check_rows:
-        pairs = [(run.labels[m]["category"], c["category"] or NO_ANSWER) for m, c in check_by.items()]
-        both = [(a, b) for a, b in pairs if a in taxonomy]
-        agree = sum(a == b for a, b in both)
-        po = agree / len(both) if both else 0.0
-        ca, cb = Counter(a for a, _ in both), Counter(b for _, b in both)
-        pe = sum(ca[k] * cb[k] for k in ca) / (len(both) ** 2) if both else 0.0
-        agreement = {"model": check_rows[0]["model"], "items": len(pairs), "items_with_a_category": len(both),
-                     "agreement": round(po, 3), "cohen_kappa": round((po - pe) / (1 - pe), 3) if pe < 1 else None,
-                     "check_model_no_answer": sum(1 for _, b in pairs if b == NO_ANSWER)}
-
-    # ------------------------------------------------------------------ expert validation pack
-    ev = out / "expert_validation"
-    k = int(run.s.get("examples_per_category") or 5)
-    rng = random.Random(run.s["random_seed"])
-    tax_rows = []
+    md = ["# Task categories with examples (inductive phase)\n",
+          f"{len(taxonomy)} categories found by `{plan['model']['name']}` in {n_all} methods of the "
+          f"{plan['population']['repositories']} repositories of the study corpus.\n"]
     for row in rows:
         if not row["in_taxonomy"]:
             continue
-        ex = by_cat[row["category"]][:]
-        rng.shuffle(ex)
-        tax_rows.append({"category": row["category"] + (" †" if row["below_min_share"] else ""),
-                         "methods_labelled": row["methods"],
-                         "share_of_corpus": f"{row['share']:.1%} [{row['ci_low']:.1%}, {row['ci_high']:.1%}]",
-                         "repositories": row["repositories"],
-                         "names_merged_into_it": "; ".join(sorted(set(row["name_variants"].split("; ")) - {row["category"]}
-                                                                  - {""})),
-                         "examples": " | ".join(f"{r['signature']}: {r['summary']}" for r in ex[:k]),
-                         "keep_yes_no": "", "rename_to": "", "merge_into": "", "split_into": "",
-                         "definition": "", "comments": ""})
-    _csv(ev / "taxonomy_review.csv", tax_rows, list(tax_rows[0]) if tax_rows else ["category"])
-
-    review = run.review_ids(int(run.s["method_review_size"]))
-    rrecs = run.records(review)
-    mrows = [{"method_id": m, "repository": rrecs[m]["full_name"], "method": rrecs[m]["signature"],
-              "url": rrecs[m]["url"], "source": coding.method_source(rrecs[m], 60),
-              "model_summary": run.labels[m]["summary"], "model_category": run.labels[m]["category"],
-              "check_model_category": (check_by.get(m) or {}).get("category") or "",
-              "category_correct_yes_no": "", "correct_category": "", "comments": ""} for m in review]
-    _csv(ev / "method_review.csv", mrows, list(mrows[0]) if mrows else ["method_id"])
-
-    cand = [{"proposed_name": n, "methods": c["support"], "first_round": c["first_round"],
-             "examples": " | ".join(f"{r['signature']}: {r['summary']}" for r in labels
-                                    if r["raw_task"] and run.codebook.match(r["raw_task"]) == n)[:600],
-             "should_be_a_category_yes_no": "", "belongs_to_category": "", "comments": ""}
-            for n, c in sorted(run.codebook.cats.items(), key=lambda kv: (-kv[1]["support"], kv[0]))
-            if not run.codebook.in_taxonomy(n) and c["support"] > 0]
-    _csv(ev / "candidate_review.csv", cand, list(cand[0]) if cand else ["proposed_name"])
-
-    md = ["# Task categories with examples\n",
-          f"{len(taxonomy)} categories found by `{plan['model']['name']}` in {n_all} methods of the "
-          f"{plan['population']['repositories']} repositories of the study corpus.\n"]
-    for row in tax_rows:
-        md.append(f"## {row['category']}\n")
-        md.append(f"{row['methods_labelled']} labelled methods, {row['share_of_corpus']} of the corpus, "
+        md.append(f"## {row['category']}{' †' if row['below_min_share'] else ''}\n")
+        md.append(f"{row['methods']} labelled methods, {row['share']:.1%} [{row['ci_low']:.1%}, {row['ci_high']:.1%}], "
                   f"{row['repositories']} repositories.\n")
-        ex = by_cat[row["category"].removesuffix(" †")][:]
+        ex = by_cat[row["category"]][:]
         random.Random(run.s["random_seed"]).shuffle(ex)
         for r in ex[:3]:
             rec = recs[r["method_id"]]
             md.append(f"**{r['signature']}** ([{rec['full_name']}]({rec['url']})): {r['summary']}\n")
             md.append("```smalltalk\n" + coding.method_source(rec, 25) + "\n```\n")
-    (ev / "examples.md").write_text("\n".join(md), encoding="utf-8")
     (out / "taxonomy.md").write_text("\n".join(md), encoding="utf-8")
-    (ev / "README.md").write_text(EXPERT_README.format(n=len(taxonomy), m=len(mrows), c=len(cand)), encoding="utf-8")
+    candidates = sum(1 for n, c in run.codebook.cats.items() if not run.codebook.in_taxonomy(n) and c["support"] > 0)
 
     # ------------------------------------------------------------------ figures
     figs = _figures(run.curve, rows, taxonomy, figures, plan, log)
@@ -166,14 +111,13 @@ def export(run, plan: dict, check_rows: list[dict] | None, out: Path, figures: P
         "categories": len(taxonomy),
         "categories_at_min_share": sum(1 for r in rows if r["in_taxonomy"] and not r["below_min_share"]),
         "seed_categories": coding.SEED_CATEGORIES, "unused_seed_categories": unused_seeds,
-        "candidates": len(cand), "no_answer": len(by_cat.get(NO_ANSWER, [])),
+        "candidates": candidates, "no_answer": len(by_cat.get(NO_ANSWER, [])),
         "rare_names": len(by_cat.get(UNCLASSIFIED, [])),
         "labelled_tests": sum(r["is_test"] for r in labels), "repositories_covered": len({r["repository"] for r in labels}),
         "seconds_per_method": round(sum(r["seconds"] for r in labels) / n_all, 3) if n_all else None,
         "margin_of_error_all_labelled": round(sampling.margin_for(n_all, N, conf), 4),
-        "agreement": agreement, "taxonomy": rows, "curve": run.curve, "figures": figs,
-        "files": {"taxonomy": str(out / "taxonomy.csv"), "labels": str(out / "labels.csv"),
-                  "expert_validation": str(ev)}}
+        "taxonomy": rows, "curve": run.curve, "figures": figs,
+        "files": {"taxonomy": str(out / "taxonomy.csv"), "labels": str(out / "labels.csv")}}
     write_json(out / "summary.json", summary)
     return summary
 
@@ -247,26 +191,3 @@ def _figures(curve: list[dict], rows: list[dict], taxonomy: list[str], figures: 
         plt.close(fig)
         out["category_distribution"] = str(p)
     return out
-
-
-EXPERT_README = """# Expert validation of the Pharo task taxonomy
-
-A small language model read methods of real Pharo projects and named the programming task each
-one performs. Methods were drawn at random until new methods stopped producing new categories
-(saturation). Your judgement decides what the final taxonomy is. Please do not look at the
-other files before filling these in.
-
-1. **taxonomy_review.csv**: {n} categories, one row each, with examples.
-   - `keep_yes_no`: is this a real, distinct kind of programming task in Pharo?
-   - `rename_to`: a better name, if any.
-   - `merge_into`: the category it is really the same as, if any.
-   - `split_into`: names of the categories it should be split into, separated by `;`.
-   - `definition`: one sentence defining the category (please write one for every kept category).
-2. **method_review.csv**: {m} methods drawn at random from the labelled ones.
-   Open the `url`, read the `source`, then fill `category_correct_yes_no` and, when it is wrong,
-   `correct_category` (an existing category, or a new name).
-3. **candidate_review.csv**: {c} names the model proposed too rarely to become categories.
-   `should_be_a_category_yes_no`, or `belongs_to_category` when one of the categories covers it.
-
-`examples.md` shows every category with three methods and their source code.
-"""

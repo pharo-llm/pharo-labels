@@ -2,10 +2,11 @@
 
 1. GitHub mining and filter 1 (is this real Pharo code?)
 2. Filter 2 (the study corpus) and the method population
-3. Sample size and labelling, with statistics
+3. Sample size and inductive labelling (open coding), with statistics
 4. The saturation loop
-5. The expert-validation export
-6. What the labelling would cost on a commercial API
+5. The codebook, classified by three models: agreement, reliability gate, expert sample
+6. The experts' answers: accuracy, agreement, corrected shares, final taxonomy
+7. What the labelling would cost on a commercial API
 """
 from __future__ import annotations
 
@@ -162,7 +163,7 @@ def labelling_sections(cfg, plan: dict, summ: dict) -> list[str]:
              if plan['settings'].get('embedding_model') else " (merging by meaning was off).")
           + f" At the end of each round, a name becomes a category once at least {plan['settings']['min_support']} "
           f"methods and at least {plan['settings'].get('min_share', 0):.1%} of all methods labelled so far have it; until "
-          "then it is a *candidate*, shown to the experts but not in the taxonomy. The share is what makes saturation "
+          "then it is a *candidate*, listed in `taxonomy.csv` but not in the taxonomy. The share is what makes saturation "
           "reachable with a small model, which gives a one-off name to many methods, and it gives saturation a "
           f"precise meaning: the taxonomy aims at every task with a prevalence of at least "
           f"{plan['settings'].get('min_share', 0):.1%}; such a task stays unseen in n random methods with probability "
@@ -181,10 +182,6 @@ def labelling_sections(cfg, plan: dict, summ: dict) -> list[str]:
           f"| Seed categories never used | {', '.join(summ['unused_seed_categories']) or 'none'} |",
           f"| Margin of error with all labelled methods (95%) | ±{summ['margin_of_error_all_labelled']:.1%} |",
           f"| Model time per method | {summ['seconds_per_method']} s |"]
-    a = summ.get("agreement")
-    if a:
-        L.append(f"| Same category from the check model `{a['model']}`, coding independently ({a['items_with_a_category']} methods) | "
-                 f"{_pct(a['agreement'])} (Cohen's κ = {a['cohen_kappa']}) |")
     L += ["", "**Task categories.** Share of the corpus estimated from all labelled methods, 95% Wilson interval "
           "with the finite population correction, and the estimated number of corpus methods:\n",
           "| Category | Methods | Share [95% CI] | ≈ methods in corpus | Repositories | Tests | Seed |",
@@ -229,17 +226,114 @@ def labelling_sections(cfg, plan: dict, summ: dict) -> list[str]:
                      "population_exhausted": "Every method of the corpus was labelled."}.get(stop, "") + "\n")
     if summ["figures"].get("saturation_curve"):
         L.append("![Saturation curve](figures/saturation_curve.png)\n")
-    ev = Path(summ["files"]["expert_validation"])
-    L += ["## 5. Expert validation export\n",
-          f"The taxonomy is not final until Pharo experts have reviewed it. Files in "
-          f"`{ev.relative_to(cfg.output_dir)}/` (instructions: its `README.md`):\n",
-          "| File | Content | Experts fill |", "|---|---|---|",
-          f"| `taxonomy_review.csv` | {summ['categories']} categories with share and examples | keep, rename, merge, split, definition |",
-          f"| `method_review.csv` | {plan['settings']['method_review_size']} random labelled methods with source, link, model and check-model label | correct yes/no, correct category |",
-          f"| `candidate_review.csv` | {summ['candidates']} names proposed too rarely | category yes/no, or which category covers it |",
-          "| `examples.md` | every category with three methods and their source code | (reading) |",
-          "", "Every labelled method with its final category: `results/labelling/labels.csv`; every model answer: "
-          "`results/labelling/labels.jsonl`; the codebook: `results/labelling/codebook.json`.\n"]
+    return L + classify_section(cfg)
+
+
+def _f(x, pct=False) -> str:
+    if x is None:
+        return "–"
+    return _pct(x) if pct else str(x)
+
+
+def classify_section(cfg) -> list[str]:
+    cdir = cfg.labelling_dir / "classify"
+    L = ["## 5. The codebook, classified by three models\n",
+         "Open codes cannot be compared across models (two names for one task), so the inductive categories become "
+         "a codebook with definitions (`codebook_draft.csv`, consolidated by the researcher in `codebook.csv`), and "
+         "models of different families classify a **new** random sample with it (deductive coding: Shah et al. 2025; "
+         "taxonomy then classification: TnT-LLM, KDD 2024). Different families, because errors of related models are "
+         "correlated (Kim et al., ICML 2025).\n"]
+    p = cdir / "agreement.json"
+    if not p.exists():
+        return L + ["Not run yet: `./run.sh classify`.\n"]
+    a = json.loads(p.read_text())
+    L += [f"**Codebook**: {len(a['codebook'])} categories including Other ("
+          + ("consolidated by the researcher" if a["codebook_kind"] == "consolidated" else
+             "**the model's draft, not consolidated**: copy `codebook_draft.csv` to `codebook.csv` and edit it")
+          + f"). **Sample**: {_n(a['sample'])} methods drawn like the initial sample, none of them used to build the codebook.\n",
+          "| Agreement of the models | |", "|---|---:|",
+          f"| **Krippendorff's α** (nominal, {len(a['models'])} models) | **{_f(a['krippendorff_alpha'])}** |",
+          f"| Fleiss' κ | {_f(a['fleiss_kappa'])} |",
+          f"| Gwet's AC1 (robust to a dominant category) | {_f(a['gwet_ac1'])} |"]
+    for pr in a["pairs"]:
+        L.append(f"| `{pr['models'][0]}` / `{pr['models'][1]}`: same category, Cohen's κ | "
+                 f"{_pct(pr['agreement'])}, κ = {_f(pr['cohen_kappa'])} |")
+    total = sum(a["levels"].values())
+    for lv in sorted(a["levels"], reverse=True):
+        L.append(f"| Methods where {lv if lv != 'none' else 'no majority'} models agree | "
+                 f"{_n(a['levels'][lv])} ({_pct(a['levels'][lv] / total)}) |")
+    sc = a["selfcheck"]
+    if sc["methods"]:
+        L.append(f"| Prompt sensitivity: `{sc['model']}` again on {sc['methods']} methods, codebook and examples "
+                 f"shuffled | {_pct(sc['agreement'])}, κ = {_f(sc['cohen_kappa'])} |")
+    for m, k in a["no_answer"].items():
+        if k:
+            L.append(f"| `{m}`: answers outside the codebook | {k} |")
+    L.append("")
+    L.append(f"**Gate** (Krippendorff 2004: α ≥ 0.8 reliable, ≥ 0.667 tentative; threshold here {a['min_alpha']}): "
+             + ("**passed**: the experts get the files below.\n" if a["reliable"] else
+                "**not passed**: no expert files; what to change is in `classify/NOT_RELIABLE.md`.\n"))
+    L += ["Share of each category among the classified methods, per model (not yet corrected by the experts):\n",
+          "| Category | " + " | ".join(f"`{m}`" for m in a["models"]) + " | Majority |",
+          "|---|" + "---:|" * (len(a["models"]) + 1)]
+    for c, d in sorted(a["distribution"].items(), key=lambda kv: -kv[1]["majority"]):
+        L.append(f"| {c} | " + " | ".join(_pct(d[m]) for m in a["models"]) + f" | {_pct(d['majority'])} |")
+    e = a.get("experts")
+    if e:
+        L += ["", f"**Expert sample**: {e['methods']} methods, stratified by agreement level, more where the models "
+              "disagree (Neyman allocation), every stratum checked, including unanimous methods where shared errors "
+              "hide; the weights make the estimates unbiased (Gligorić et al., NAACL 2025). The experts classify "
+              "blind: the models' answers are not shown.\n",
+              "| Agreement level | Methods | Checked by the experts |", "|---|---:|---:|"]
+        for h, st in sorted(e["strata"].items(), reverse=True):
+            L.append(f"| {h} | {_n(st['N'])} | {st['m']} |")
+        L += ["", "Files: `labelling/expert_validation/` (README.md, method_review.csv, codebook_review.csv, examples.md). "
+              "Each expert's filled files go in `expert_validation/returned/<expert name>/`, the agreed answers after "
+              "discussion in `returned/consensus/`; then `./run.sh validate`.\n"]
+    return L
+
+
+def validation_section(cfg) -> list[str]:
+    p = cfg.labelling_dir / "validated" / "validation.json"
+    L = ["## 6. The experts' answers\n"]
+    if not p.exists():
+        return L + ["No expert answers yet: put each expert's files in "
+                    "`results/labelling/expert_validation/returned/<expert name>/`, then `./run.sh validate`.\n"]
+    v = json.loads(p.read_text())
+
+    def acc(a):
+        return f"{_pct(a['estimate'])} [{_pct(a['ci_low'])}, {_pct(a['ci_high'])}]" if a["checked"] else "–"
+    ref = ", ".join(f"{k}: {n}" for k, n in v["reference"].items())
+    L += [f"Experts: {', '.join(v['experts'])}. Reference label of a method: the experts' common answer, or their "
+          f"consensus after discussion ({ref}). Accuracies are stratified estimates over the agreement levels "
+          "(95% intervals).\n",
+          "| | |", "|---|---:|"]
+    if v["human_alpha"] is not None:
+        L.append(f"| **Experts' agreement** (Krippendorff's α, the human baseline) | **{v['human_alpha']}** |")
+    for pr in v["expert_pairs"]:
+        L.append(f"| {pr['experts'][0]} / {pr['experts'][1]}: Cohen's κ ({pr['methods']} methods) | {_f(pr['cohen_kappa'])} |")
+    L.append(f"| **Accuracy of the majority label** | **{acc(v['accuracy']['majority'])}** |")
+    for m in v["models"]:
+        L.append(f"| Accuracy of `{m}` | {acc(v['accuracy'][m])} |")
+    for who, al in v["model_vs_reference_alpha"].items():
+        L.append(f"| α between {'the majority label' if who == 'majority' else f'`{who}`'} and the reference | {_f(al)} |")
+    for h, b in v["accuracy"]["majority"]["by_level"].items():
+        L.append(f"| Majority label correct when {h if h != 'none' else 'no majority'} models agree | "
+                 f"{_pct(b['accuracy'])} ({b['correct']}/{b['checked']}) |")
+    d = v["decisions"]
+    L += [f"| Codebook: dropped / renamed / merged / definitions fixed | {d['dropped']} / {d['renamed']} / {d['merged']} / "
+          f"{d['definitions_fixed']} |", f"| Items still to discuss (`to_discuss.csv`) | {d['to_discuss']} |", "",
+          "A model can stand in for a human rater when its agreement with the reference is close to the experts' "
+          "agreement with each other (Ahmed et al., MSR 2025).\n",
+          "**Final taxonomy.** Share of each task in the corpus: the models' share on the classified sample corrected "
+          "with the experts' answers (prediction-powered inference, Angelopoulos et al., Science 2023), so the model's "
+          "errors do not bias it; precision and recall of the majority label:\n",
+          "| Category | Definition | Share [95% CI] | Models only | ≈ methods in corpus | Precision | Recall |",
+          "|---|---|---|---:|---:|---:|---:|"]
+    for t in v["final_taxonomy"]:
+        L.append(f"| {t['category']} | {t['definition']} | {_pct(t['share'])} [{_pct(t['ci_low'])}, {_pct(t['ci_high'])}] | "
+                 f"{_pct(t['model_share'])} | {_n(t['estimated_methods_in_corpus'])} | {_f(t['precision'])} | {_f(t['recall'])} |")
+    L.append("\nFiles: `results/labelling/validated/` (final_taxonomy.csv, reference_labels.csv, to_discuss.csv).\n")
     return L
 
 
@@ -258,7 +352,7 @@ def cost_section(cfg, db: Database, plan: dict | None, summ: dict | None) -> lis
         w.writeheader()
         w.writerows({k: round(v, 4) if isinstance(v, float) else v for k, v in r.items()} for r in e["prices"])
     lo, hi = c["budget_factor"]
-    L = ["## 6. What the labelling would cost on a commercial API\n",
+    L = ["## 7. What the labelling would cost on a commercial API\n",
          f"Tokens counted with {e['tokenizer']} on the prompts this labelling builds; prices of "
          f"{c['prices_date']} (USD per million tokens, in `config.yaml`, `api_cost`). Every price below is for "
          "one model; all numbers: `results/tables/api_cost.csv`.\n",
@@ -273,7 +367,7 @@ def cost_section(cfg, db: Database, plan: dict | None, summ: dict | None) -> lis
           f"without it, {_n(t['too_long_without_cap'])} prompts would not fit in the labeller's "
           f"{_n(cost.NUM_CTX)}-token context.\n"]
     for sc in e["scenarios"]:
-        what = (f"every call of this labelling ({_n(sc['calls'])}: labelled methods and check model)"
+        what = (f"every call of the inductive labelling ({_n(sc['calls'])} methods)"
                 if sc["scenario"] == "This run" else f"every method of the corpus once ({_n(sc['calls'])} calls)")
         rows = [r for r in e["prices"] if r["scenario"] == sc["scenario"]]
         L += [f"**{sc['scenario']}**: {what}; {rows[0]['input_mtok']:,.2f}M input and "
@@ -289,7 +383,7 @@ def cost_section(cfg, db: Database, plan: dict | None, summ: dict | None) -> lis
           "effort; an assumption, measure it on 50 calls). *Prompt cache*: the shared prefix is cached only from "
           f"{c['cache_min_prefix_tokens']} tokens; it is assumed padded to that size with more worked examples and "
           "read from the cache on every call (best case). *Total budget*: Batch API without reasoning "
-          f"× {lo} to Batch API with reasoning × {hi}, for a pilot, retries, the check model and a rerun. Claude "
+          f"× {lo} to Batch API with reasoning × {hi}, for a pilot, retries, the classification models and a rerun. Claude "
           "counts more tokens than GPT on code: × 1.25 assumed (`token_factor`).\n",
           f"**How to reduce it** ({e['reference']}, whole corpus):\n",
           "| What | Cost | Compared with the standard API |", "|---|---:|---:|"]
@@ -331,6 +425,7 @@ def write(cfg, db: Database) -> Path:
     L += s1 + s2
     if plan and summ:
         L += labelling_sections(cfg, plan, summ)
+        L += validation_section(cfg)
     else:
         L += ["## 3-5. Labelling\n", "Not run yet: `./run.sh label`.\n"]
     L += cost_section(cfg, db, plan, summ)

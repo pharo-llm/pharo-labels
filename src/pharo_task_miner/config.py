@@ -79,8 +79,7 @@ DEFAULTS: dict = {
     # Labelling of the study corpus (`pharo-miner label`, ./run.sh label): sample size, open
     # coding of task categories with a small model, saturation loop, expert-validation export
     "labelling": {
-        "model": "pharo-llm/Qwen2.5-Coder-SFT:1.5B",   # Ollama tag, or hf:<repo>[@revision] (e.g. a -PT adapter)
-        "check_model": "pharo-llm/Qwen2.5-Coder-SFT:7b",  # re-labels the review subset; None = skip
+        "model": "qwen3.8:27b",          # inductive phase and codebook definitions (Ollama tag)
         "confidence": 0.95, "margin_of_error": 0.05, "proportion": 0.5,  # sample-size calculator (Cochran + FPC)
         "sample_size": None,                    # None = computed from the three values above
         "batch_size": 50,                       # methods drawn per saturation round
@@ -97,7 +96,14 @@ DEFAULTS: dict = {
         "max_method_chars": 4000,               # ... and so are methods with very long lines (generated data),
                                                 # which would not fit in the model's context
         "examples_per_category": 5,             # examples per category in the expert-validation file
-        "method_review_size": 60,               # labelled methods experts check one by one
+        # deductive phase (step 4): models of three different families classify a new sample with the codebook
+        "classify_models": ["qwen3.8:27b", "gemma4:12b", "granite4.2:8b"],
+        "classify_sample_size": None,           # None = the sample-size calculator's n (384 at 95% / ±5%)
+        "selfcheck_size": 100,                  # methods the first model classifies again, prompt shuffled
+        "min_alpha": 0.667,                     # Krippendorff's alpha needed before the experts (tentative level)
+        "gold_size": 200,                       # methods the experts classify (±5% on accuracy)
+        "gold_min_per_stratum": 20,             # at least this many per agreement level (3/3, 2/3, none)
+        "gold_error_guess": {"3/3": 0.1, "2/3": 0.35, "none": 0.6},  # guessed error rates: Neyman allocation
         "random_seed": 42, "temperature": 0, "max_tokens": 80, "timeout_seconds": 300,
     },
     # What the labelling would cost on a commercial API (REPORT.md, section 6). USD per million tokens,

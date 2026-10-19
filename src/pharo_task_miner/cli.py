@@ -64,11 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     cmd("analyze", "Receiver resolution, API/framework usage, package dependencies, duplicated code")
 
-    p = cmd("label", "Sample size, open coding of task categories with a small model, saturation loop, "
-                     "expert-validation export")
-    p.add_argument("--model", help="Labelling model: an Ollama tag, or hf:<repo>[@revision] (default: labelling.model)")
-    p.add_argument("--check-model", dest="check_model",
-                   help="Second model that re-labels the review subset to measure agreement ('none' to skip)")
+    p = cmd("label", "Inductive phase: sample size, open coding of task categories, saturation loop, codebook draft")
+    p.add_argument("--model", help="Labelling model: an Ollama tag (default: labelling.model)")
     p.add_argument("--sample-size", type=int, dest="sample_size", help="Initial sample (default: computed)")
     p.add_argument("--confidence", type=float, help="Confidence level of the sample-size calculator, e.g. 0.95")
     p.add_argument("--margin", type=float, dest="margin_of_error", help="Margin of error, e.g. 0.05")
@@ -80,6 +77,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Share of the labelled methods a category needs to be admitted, e.g. 0.005")
     p.add_argument("--embedding-model", dest="embedding_model",
                    help="Ollama embedding model that merges names with the same meaning ('none' = lexical only)")
+
+    p = cmd("classify", "Deductive phase: several models classify a new sample with the codebook; agreement, "
+                        "reliability gate, stratified expert sample")
+    p.add_argument("--models", dest="classify_models", help="Space-separated Ollama tags (default: labelling.classify_models)")
+    p.add_argument("--min-alpha", type=float, dest="min_alpha", help="Krippendorff's alpha needed for the expert files")
+    p.add_argument("--gold-size", type=int, dest="gold_size", help="Methods the experts classify")
+    p.add_argument("--sample-size", type=int, dest="classify_sample_size", help="Methods the models classify")
+
+    cmd("validate", "Read the experts' answers back: accuracy, experts' agreement, corrected shares, final taxonomy")
 
     cmd("report", "Write results/REPORT.md: from GitHub to the expert-validation export")
 
@@ -135,7 +141,7 @@ COMMANDS = {
     "discover": stages.discover, "verify": stages.verify, "metadata": stages.metadata,
     "classify-domains": stages.classify_domains, "sample": stages.sample, "filter-corpus": stages.filter_corpus,
     "clone": stages.clone_stage, "parse": stages.parse, "analyze": stages.analyze,
-    "label": stages.label, "report": stages.report, "snapshot": stages.snapshot, "status": stages.status,
+    "label": stages.label, "classify": stages.classify, "validate": stages.validate, "report": stages.report, "snapshot": stages.snapshot, "status": stages.status,
 }
 
 

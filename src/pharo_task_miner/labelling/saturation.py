@@ -1,4 +1,4 @@
-"""The labelling run: initial sample, saturation loop, check model.
+"""The labelling run (inductive phase): initial sample, saturation loop.
 
 Everything is written to ``results/labelling/`` as it happens, so an interrupted run resumes
 where it stopped (labelled methods are never sent to the model again):
@@ -7,7 +7,6 @@ where it stopped (labelled methods are never sent to the model again):
 * ``rounds/round_NNN.json``  the methods drawn in each round (round 0 = the initial sample)
 * ``labels.jsonl``       one line per labelled method: summary, raw task, category, model output
 * ``curve.csv``          the saturation curve, one row per round
-* ``check.jsonl``        the check model's labels of the review subset
 * ``codebook.json``      every proposed category: support, variants, first and admission round
 
 Every answer records a hash of its prompt. When a setting changes the prompt of a few methods only
@@ -18,7 +17,6 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import random
 import time
 from pathlib import Path
 
@@ -240,35 +238,6 @@ class Run:
             "prompt_version": coding.PROMPT_VERSION, "seed_categories": coding.SEED_CATEGORIES,
             "categories": [{**c, "variants": sorted(c["variants"]), "in_taxonomy": self.codebook.in_taxonomy(n)}
                            for n, c in self.codebook.cats.items()]})
-
-    # ------------------------------------------------------------------------------- check model
-    def check(self, model, size: int) -> list[dict]:
-        """A second model codes a random subset independently, with the same prompt; both answers
-        go through the same codebook, so agreement means the same final category."""
-        path = self.out / "check.jsonl"
-        rows = _read_jsonl(path)
-        done = {r["method_id"]: r for r in rows if r.get("model") == model.name}
-        stale = {r["method_id"] for r, _ in self.stale(done.values())}
-        if stale:                                     # made with another prompt: coded again below
-            _rewrite(path, [r for r in rows if not (r.get("model") == model.name and r["method_id"] in stale)])
-            done = {k: v for k, v in done.items() if k not in stale}
-        ids = self.review_ids(size)
-        recs = self.records([m for m in ids if m not in done])
-        for i, mid in enumerate([m for m in ids if m not in done], 1):
-            ans = self._answer(model, recs[mid])
-            row = {"method_id": mid, **{k: ans[k] for k in ("model", "summary", "raw_task", "prompt_sha", "output")}}
-            done[mid] = row
-            _append(path, row)
-            if i % 20 == 0:
-                self.log(f"    check: {i} labelled")
-        for r in done.values():
-            r["category"] = self.codebook.final(r["raw_task"])
-        return [done[m] for m in ids]
-
-    def review_ids(self, size: int) -> list[int]:
-        ids = sorted(self.labels)
-        rng = random.Random(self.s["random_seed"])
-        return sorted(rng.sample(ids, min(size, len(ids))))
 
 
 def prepare(out: Path, settings: dict, log) -> None:

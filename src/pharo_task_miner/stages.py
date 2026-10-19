@@ -530,17 +530,17 @@ def status(cfg, args):
 
 # --------------------------------------------------------------------------- labelling
 def label(cfg, args):
-    """Sample size, initial sample, saturation loop, check model, expert-validation export."""
+    """Step 3, inductive phase: sample size, initial sample, saturation loop, codebook draft."""
     from .labelling import export as lexport, sampling as ls, saturation
     from .labelling.coding import PROMPT_VERSION
     from .labelling.models import ModelError, OllamaEmbedder, make_model
     from .sampling.corpus_filter import STAGE as FILTER_STAGE
     s = dict(cfg["labelling"])
-    for k in ("model", "check_model", "sample_size", "confidence", "margin_of_error", "batch_size", "patience",
+    for k in ("model", "sample_size", "confidence", "margin_of_error", "batch_size", "patience",
               "max_rounds", "min_support", "min_share", "embedding_model"):
         if getattr(args, k, None) is not None:
             s[k] = getattr(args, k)
-    for k in ("check_model", "embedding_model"):
+    for k in ("embedding_model",):
         if str(s.get(k) or "").lower() in ("", "none", "no", "off"):
             s[k] = None
     with open_db(cfg) as db, tracked_run(db, "label", cfg, vars(args)) as run:
@@ -577,7 +577,7 @@ def label(cfg, args):
                 "sample_size": calc, "initial_sample_size": n,
                 "initial_margin": round(ls.margin_for(n, N, calc["confidence"], calc["proportion"]), 4),
                 "alternatives": [ls.cochran(N, c, e) for c, e in ((0.90, 0.05), (0.95, 0.05), (0.95, 0.03), (0.99, 0.05))],
-                "model": {"name": model.name, "description": model.describe()}, "check_model": s["check_model"],
+                "model": {"name": model.name, "description": model.describe()},
                 "settings": s, "settings_digest": s.get("settings_digest") or saturation._settings_digest(s)}
         write_json(out / "plan.json", plan)
 
@@ -587,23 +587,71 @@ def label(cfg, args):
         result = lrun.run(model)
         log(f"Labelling: {result['methods_labelled']} methods, {result['categories']} categories, "
             f"stop: {result['stop_reason']}.")
-        checks = None
-        if s["check_model"]:
-            try:
-                checker = make_model(s["check_model"], s)
-                log(f"Check model {checker.name}: coding the {s['method_review_size']} review methods independently …")
-                checks = lrun.check(checker, int(s["method_review_size"]))
-            except ModelError as e:
-                log(f"Check model skipped: {e}")
         plan["result"] = result
         write_json(out / "plan.json", plan)
-        summ = lexport.export(lrun, plan, checks, out, cfg.output_dir / "figures", log)
-        if summ.get("agreement"):
-            a = summ["agreement"]
-            log(f"Agreement with {a['model']}: {a['agreement']:.0%} (kappa {a['cohen_kappa']}) on "
-                f"{a['items_with_a_category']} methods.")
+        summ = lexport.export(lrun, plan, out, cfg.output_dir / "figures", log)
         run.counts.update({k: result[k] for k in ("methods_labelled", "categories", "stop_reason")})
-        log(f"Taxonomy: {out / 'taxonomy.csv'}; expert validation files: {out / 'expert_validation'}")
+        log(f"Taxonomy (inductive): {out / 'taxonomy.csv'}")
+        from .labelling.classify import draft_codebook
+        draft_codebook(summ, list(lrun.labels.values()), model, out, log)
+
+
+def classify(cfg, args):
+    """Step 4, deductive phase: several models classify a fresh sample with the codebook;
+    agreement, prompt sensitivity, reliability gate, stratified expert sample."""
+    from .labelling import classify as lc, sampling as ls
+    from .labelling.models import ModelError, make_model
+    s = dict(cfg["labelling"])
+    for k in ("classify_models", "min_alpha", "gold_size", "classify_sample_size"):
+        if getattr(args, k, None) is not None:
+            s[k] = getattr(args, k)
+    if isinstance(s["classify_models"], str):
+        s["classify_models"] = s["classify_models"].split()
+    out = cfg.labelling_dir
+    if not (out / "plan.json").exists():
+        raise StageBlocked("The inductive phase has not run yet: ./run.sh label first.")
+    plan = json.loads((out / "plan.json").read_text())
+    s["max_method_lines"] = plan["settings"].get("max_method_lines", s["max_method_lines"])
+    s["max_method_chars"] = plan["settings"].get("max_method_chars", s.get("max_method_chars"))
+    if not s.get("classify_sample_size"):
+        s["classify_sample_size"] = plan["sample_size"]["n"]
+    with open_db(cfg) as db, tracked_run(db, "classify", cfg, vars(args)) as run:
+        pop = ls.population(db, study_repo_ids(db), bool(plan["settings"]["include_tests"]))
+        inductive = {json.loads(line)["method_id"] for line in (out / "labels.jsonl").read_text().splitlines() if line}
+        try:
+            models = [make_model(m, s) for m in s["classify_models"]]
+        except ModelError as e:
+            raise StageBlocked(str(e)) from e
+        cls = lc.Classification(out, s, pop, inductive, lambda ids: ls.method_records(db, list(ids)), log)
+        log(f"Codebook ({cls.codebook_kind}): {len(cls.codebook)} categories; {len(cls.sample)} new methods; "
+            f"models: {', '.join(m.name for m in models)}")
+        res = cls.run(models)
+        log(f"Krippendorff's alpha {res['krippendorff_alpha']}, Fleiss' kappa {res['fleiss_kappa']}, "
+            f"Gwet's AC1 {res['gwet_ac1']}; levels {res['levels']}; self-check kappa {res['selfcheck']['cohen_kappa']}")
+        gate = cls.out / "NOT_RELIABLE.md"
+        ev = out / "expert_validation"
+        if not res["reliable"]:
+            gate.write_text(lc.NOT_RELIABLE.format(k=len(models), n=res["sample"], alpha=res["krippendorff_alpha"],
+                                                   t=res["min_alpha"], ac1=res["gwet_ac1"]), encoding="utf-8")
+            log(f"Codebook NOT reliable (alpha < {res['min_alpha']}): no expert files; see {gate}")
+        else:
+            if gate.exists():
+                gate.unlink()
+            with (out / "labels.csv").open(encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            inductive_rows = [{"category": r["category"], "signature": r["method"], "summary": r["summary"]} for r in rows]
+            res["experts"] = lc.expert_pack(cls, res, inductive_rows, ev, log)
+            write_json(cls.out / "agreement.json", res)
+        run.counts.update({"alpha": res["krippendorff_alpha"], "reliable": res["reliable"]})
+
+
+def validate(cfg, args):
+    """Step 5: read the experts' answers back: accuracy, experts' agreement, corrected shares."""
+    from .labelling import validation
+    with open_db(cfg) as db, tracked_run(db, "validate", cfg, vars(args)) as run:
+        res = validation.validate(cfg.labelling_dir, log)
+        if res:
+            run.counts.update({"experts": len(res["experts"]), "final_categories": len(res["final_taxonomy"])})
 
 
 def report(cfg, args):

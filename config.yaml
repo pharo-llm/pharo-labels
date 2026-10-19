@@ -98,8 +98,7 @@ analysis:
   extract_api_usage: true
 
 labelling:                           # ./run.sh label — settings at the top of run.sh override these
-  model: pharo-llm/Qwen2.5-Coder-SFT:1.5B   # Ollama tag, or hf:<repo>[@revision], e.g. hf:pharo-llm/Qwen2.5-Coder-1.5B-PT@checkpoint-15400
-  check_model: pharo-llm/Qwen2.5-Coder-SFT:7b   # re-labels the review subset to measure agreement; null = skip
+  model: qwen3.8:27b                # inductive phase (open coding) and codebook definitions; Ollama tag
   confidence: 0.95                   # sample-size calculator (Cochran 1977, with finite population correction)
   margin_of_error: 0.05
   proportion: 0.5                    # 0.5 = most conservative
@@ -113,7 +112,13 @@ labelling:                           # ./run.sh label — settings at the top of
   embedding_model: all-minilm        # merges task names with the same meaning (45 MB, Ollama); null = lexical merging only
   semantic_threshold: 0.78           # cosine similarity above which two names are one category
   include_tests: true
-  method_review_size: 60             # labelled methods the experts check one by one
+  # deductive phase (./run.sh classify): three model families classify a NEW sample with the codebook
+  classify_models: [qwen3.8:27b, gemma4:12b, granite4.2:8b]   # Alibaba, Google, IBM
+  classify_sample_size: null         # null = the sample-size calculator's n
+  selfcheck_size: 100                # the first model again, codebook and examples shuffled: prompt sensitivity
+  min_alpha: 0.667                   # Krippendorff's alpha below this: NOT_RELIABLE.md, no expert files
+  gold_size: 200                     # methods the experts classify blind (stratified by the models' agreement)
+  gold_min_per_stratum: 20
   random_seed: 42
 
 api_cost:                            # REPORT.md section 6: what the labelling would cost on a commercial API

@@ -112,7 +112,8 @@ class PipelineTest(unittest.TestCase):
                                   "min_development_days": 0, "max_years_since_last_push": 0, "require_baseline": True,
                                   "require_tonel": True, "min_non_test_methods": 0, "max_methods": 0, "min_test_methods": 0,
                                   "min_test_method_share": 0, "max_duplicated_method_share": 1.0, "max_parse_failure_share": 1.0},
-                "labelling": {"embedding_model": None, "sample_size": 4, "batch_size": 2, "patience": 2, "max_rounds": 5, "method_review_size": 3},
+                "labelling": {"embedding_model": None, "sample_size": 4, "batch_size": 2, "patience": 2, "max_rounds": 5,
+                              "classify_sample_size": 10, "selfcheck_size": 2, "gold_min_per_stratum": 1},
             }
             cfg_path = tmp / "config.json"
             cfg_path.write_text(json.dumps(cfg))
@@ -139,38 +140,71 @@ class PipelineTest(unittest.TestCase):
             # labelling with a stand-in model (no Ollama needed)
             with mock.patch("pharo_task_miner.labelling.models.make_model",
                             lambda spec, s: FakeModel()):
-                self.assertEqual(run("label", "--check-model", "fake"), 0)
+                self.assertEqual(run("label"), 0)
             lab = tmp / "out" / "labelling"
             plan = json.loads((lab / "plan.json").read_text())
             self.assertEqual(plan["initial_sample_size"], 4)
             labels = list(csv.DictReader((lab / "labels.csv").open()))
             self.assertTrue(labels and all(r["url"].startswith("https://github.com/") for r in labels))
             self.assertLessEqual({r["category"] for r in labels}, {"Accessor", "Collection filtering", "(rare name: not a category)"})
-            summary = json.loads((lab / "summary.json").read_text())
-            self.assertEqual(summary["agreement"]["agreement"], 1.0)
-            for f in ("README.md", "taxonomy_review.csv", "method_review.csv", "candidate_review.csv", "examples.md"):
+            draft = list(csv.DictReader((lab / "codebook_draft.csv").open()))
+            self.assertEqual({r["category"] for r in draft} - {"Collection filtering"}, {"Accessor"})
+            self.assertTrue(all(r["definition"].startswith("Methods that") for r in draft))
+            # deductive phase: three stand-in models that always agree
+            with mock.patch("pharo_task_miner.labelling.models.make_model",
+                            lambda spec, s: FakeModel(spec)):
+                self.assertEqual(run("classify", "--models", "a b c"), 0)
+            agreement = json.loads((lab / "classify" / "agreement.json").read_text())
+            self.assertTrue(agreement["reliable"])
+            self.assertEqual(agreement["selfcheck"]["methods"], 2)
+            inductive = {json.loads(x)["method_id"] for x in (lab / "labels.jsonl").read_text().splitlines()}
+            self.assertFalse(inductive & set(json.loads((lab / "classify" / "sample.json").read_text())["method_ids"]))
+            for f in ("README.md", "codebook_review.csv", "method_review.csv", "examples.md"):
                 self.assertTrue((lab / "expert_validation" / f).exists(), f)
+            review = list(csv.DictReader((lab / "expert_validation" / "method_review.csv").open()))
+            self.assertNotIn("majority", review[0])                     # blind: no model answer shown
+            # two experts return their files; validation
+            for e in ("ann", "bob"):
+                d = lab / "expert_validation" / "returned" / e
+                d.mkdir(parents=True)
+                with (d / "method_review.csv").open("w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=list(review[0]))
+                    w.writeheader()
+                    w.writerows({**r, "expert_category": "Collection filtering" if "select:" in r["source"] else "Accessor"}
+                                for r in review)
+            self.assertEqual(run("validate"), 0)
+            v = json.loads((lab / "validated" / "validation.json").read_text())
+            self.assertEqual(v["accuracy"]["majority"]["estimate"], 1.0)
+            self.assertAlmostEqual(sum(t["share"] for t in v["final_taxonomy"]), 1.0, places=2)
             for f in ("saturation_curve.png", "category_distribution.png"):
                 self.assertTrue((tmp / "out" / "figures" / f).exists(), f)
             # the report covers every step
             self.assertEqual(run("report"), 0)
             report = (tmp / "out" / "REPORT.md").read_text()
             for h in ("## 1. GitHub mining", "## 2. Filter 2", "## 3. Sample size", "## 4. The saturation loop",
-                      "## 5. Expert validation", "## 6. What the labelling would cost", "**Whole corpus**",
+                      "## 5. The codebook, classified by three models", "**Krippendorff's α**",
+                      "## 6. The experts' answers", "**Accuracy of the majority label**",
+                      "## 7. What the labelling would cost", "**Whole corpus**",
                       "**How to reduce it**"):
                 self.assertIn(h, report)
 
 
 class FakeModel:
-    """Labels a method from its own code, so two instances always agree."""
-    name = "fake"
+    """Labels a method from its own code, so several instances always agree."""
+
+    def __init__(self, name="fake"):
+        self.name = name
 
     def describe(self):
         return {"backend": "fake"}
 
     def complete(self, prompt, max_tokens, stop):
-        method = prompt.rsplit("### Method of", 1)[1]
-        return f" Does something.\n### Task: {'Collection filtering' if 'select:' in method else 'Accessor'}"
+        if "one-sentence definition" in prompt:
+            return "Methods that do this kind of task."
+        task = "Collection filtering" if "select:" in prompt.rsplit("### Method of", 1)[1] else "Accessor"
+        if "Codebook:" in prompt:
+            return task
+        return f" Does something.\n### Task: {task}"
 
 
 if __name__ == "__main__":

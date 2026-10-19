@@ -6,7 +6,7 @@ vocabulary (first use downloads it), they are approximated by splitting the text
 (camel case apart), short numbers and runs of punctuation: within 5% of ``o200k_base`` on the
 corpus (measured on 20,000 methods and on the instructions), and the report says so. Other providers' tokenizers differ: ``token_factor`` per model in ``api_cost``.
 
-Two scenarios: *this run* (every call the labelling made: labelled methods and check model) and
+Two scenarios: *this run* (every call of the inductive labelling) and
 *the whole corpus* (every method of the population labelled once). For each model of
 ``api_cost.models``: the standard price, the Batch API, a reasoning model's hidden tokens (billed
 as output), and the prompt cache. The cache only applies to a shared prefix of at least
@@ -107,7 +107,7 @@ def estimate(db, cfg, pop: dict[int, list[int]], ldir: Path, plan: dict | None, 
     t = method_tokens(db, all_ids, s, count, tok_name, cfg.data_dir / "processed" / "prompt_tokens.json")
     tokens, tests = t["tokens"], set(t["tests"])
     rows = []
-    for name in ("labels.jsonl", "check.jsonl"):
+    for name in ("labels.jsonl",):
         p = ldir / name
         if p.exists():
             rows += [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]

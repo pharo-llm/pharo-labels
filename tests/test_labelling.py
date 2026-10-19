@@ -196,10 +196,9 @@ class SaturationTests(unittest.TestCase):
                             for m, r in records(ids).items()}
         first = saturation.Run(out, s, self.pop, recs, lambda m: None)
         res = first.run(FakeModel(["Accessor", "Parsing"]))
-        first.check(FakeModel(["Accessor"]), 5)
         long = sorted(m for m in first.labels if m % 7 == 0)
         self.assertTrue(long)
-        for name in ("labels.jsonl", "check.jsonl"):               # as stored before prompts had a hash
+        for name in ("labels.jsonl",):                             # as stored before prompts had a hash
             rows = [json.loads(x) for x in (out / name).read_text().splitlines()]
             (out / name).write_text("".join(json.dumps({k: v for k, v in r.items() if k != "prompt_sha"}) + "\n"
                                             for r in rows))
@@ -211,14 +210,9 @@ class SaturationTests(unittest.TestCase):
         rows = [json.loads(x) for x in (out / "labels.jsonl").read_text().splitlines()]
         self.assertEqual(len(rows), res["methods_labelled"])
         self.assertEqual(sorted(r["method_id"] for r in rows if "prompt_sha" in r), long)
-        checker = FakeModel(["Parsing"])
-        checks = run2.check(checker, 5)
-        self.assertEqual(checker.calls, sum(1 for c in checks if c["method_id"] % 7 == 0))
-        self.assertEqual(len((out / "check.jsonl").read_text().splitlines()), 5)
         run3 = saturation.Run(out, capped, self.pop, recs, lambda m: None)
         none = FakeModel(["Other"])
         run3.run(none)
-        run3.check(none, 5)
         self.assertEqual(none.calls, 0)                            # nothing stale any more
 
     def test_changed_settings_start_fresh(self):
@@ -260,6 +254,74 @@ class CostTests(unittest.TestCase):
         self.assertTrue(name)
         self.assertGreater(count(coding.prefix()), 500)
         self.assertEqual(count(""), 0)
+
+
+
+class AgreementTests(unittest.TestCase):
+    """The statistics of the deductive phase, against published values and a simulation."""
+
+    def test_krippendorff_alpha_reference_example(self):
+        from pharo_task_miner.labelling import agreement as ag
+        # Krippendorff (2011), "Computing Krippendorff's Alpha-Reliability": 4 coders, 12 units, missing data
+        A = [1, 2, 3, 3, 2, 1, 4, 1, 2, None, None, None]
+        B = [1, 2, 3, 3, 2, 2, 4, 1, 2, 5, None, 3]
+        C = [None, 3, 3, 3, 2, 3, 4, 2, 2, 5, 1, None]
+        D = [1, 2, 3, 3, 2, 4, 4, 1, 2, 5, 1, None]
+        self.assertAlmostEqual(ag.krippendorff_alpha([list(u) for u in zip(A, B, C, D)]), 0.743, places=3)
+
+    def test_fleiss_kappa_reference_example(self):
+        from pharo_task_miner.labelling import agreement as ag
+        # Fleiss (1971) as worked on Wikipedia: 10 items, 14 raters, 5 categories, kappa = 0.210
+        counts = [[0, 0, 0, 0, 14], [0, 2, 6, 4, 2], [0, 0, 3, 5, 6], [0, 3, 9, 2, 0], [2, 2, 8, 1, 1],
+                  [7, 7, 0, 0, 0], [3, 2, 6, 3, 0], [2, 5, 3, 2, 2], [6, 5, 2, 1, 0], [0, 2, 2, 3, 7]]
+        units = [[c for c, k in enumerate(row) for _ in range(k)] for row in counts]
+        self.assertAlmostEqual(ag.fleiss_kappa(units), 0.210, places=3)
+
+    def test_ac1_stays_high_when_one_category_dominates(self):
+        from pharo_task_miner.labelling import agreement as ag
+        units = [["A", "A", "A"]] * 95 + [["A", "B", "A"]] * 4 + [["B", "B", "B"]]
+        self.assertLess(ag.fleiss_kappa(units), 0.5)                  # the kappa paradox
+        self.assertGreater(ag.gwet_ac1(units), 0.9)
+
+    def test_majority_levels(self):
+        from pharo_task_miner.labelling import agreement as ag
+        self.assertEqual(ag.majority(["A", "A", "A"]), ("A", "3/3"))
+        self.assertEqual(ag.majority(["A", "B", "A"]), ("A", "2/3"))
+        self.assertEqual(ag.majority(["A", "B", "C"]), (None, "none"))
+        self.assertEqual(ag.majority(["A", None, "A"]), ("A", "2/3"))
+
+    def test_ppi_share_is_unbiased_and_covers(self):
+        """Models that over-label category A (true share 30%, models say ~41%): the corrected share
+        is unbiased and its 95% interval covers the truth about 95% of the time; the models'
+        share alone is biased."""
+        from pharo_task_miner.labelling import agreement as ag
+        import random as rnd
+        rng = rnd.Random(7)
+        n, reps, hits, ests, naive = 400, 400, 0, [], []
+        for _ in range(reps):
+            truth = [rng.random() < 0.30 for _ in range(n)]
+            pred = [t if rng.random() < 0.85 else (rng.random() < 0.7) for t in truth]
+            level = ["3/3" if rng.random() < 0.7 else "2/3" for _ in range(n)]
+            strata = {h: {"N": level.count(h), "m": 0} for h in ("3/3", "2/3")}
+            diffs = {}
+            for h, m in (("3/3", 40), ("2/3", 60)):
+                idx = rng.sample([i for i in range(n) if level[i] == h], m)
+                strata[h]["m"] = m
+                diffs[h] = [int(truth[i]) - int(pred[i]) for i in idx]
+            r = ag.ppi_share(sum(pred) / n, n, strata, diffs, 0.95)
+            ests.append(r["share"])
+            naive.append(r["model_share"])
+            hits += r["ci_low"] <= 0.30 <= r["ci_high"]
+        self.assertAlmostEqual(sum(ests) / reps, 0.30, delta=0.01)
+        self.assertGreater(abs(sum(naive) / reps - 0.30), 0.05)
+        self.assertGreater(hits / reps, 0.92)
+
+    def test_stratified_accuracy(self):
+        from pharo_task_miner.labelling import agreement as ag
+        strata = {"3/3": {"N": 300, "m": 50}, "2/3": {"N": 100, "m": 50}}
+        r = ag.stratified_mean(strata, {"3/3": [1.0] * 45 + [0.0] * 5, "2/3": [1.0] * 30 + [0.0] * 20})
+        self.assertAlmostEqual(r["estimate"], 0.75 * 0.9 + 0.25 * 0.6, places=4)   # not the raw 75/100
+        self.assertLess(r["ci_low"], r["estimate"])
 
 
 if __name__ == "__main__":

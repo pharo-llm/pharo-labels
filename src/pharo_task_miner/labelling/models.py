@@ -1,23 +1,16 @@
-"""Small language models used as text completers.
-
-The Pharo models of pharo-llm are code-completion models (base or fill-in-the-middle), not chat
-models, so every model is driven the same way: a plain few-shot prompt is completed, with
-deterministic decoding, until a stop string. Two backends:
-
-* ``ollama``  - any Ollama tag, e.g. ``pharo-llm/Qwen2.5-Coder-SFT:1.5B`` or ``qwen2.5-coder:7b``.
-  ``raw`` mode bypasses the model's template (the Pharo models have a FIM template).
-* ``hf``      - ``hf:<repo>[@revision]`` loads a Hugging Face model with transformers. A LoRA
-  adapter (``adapter_config.json``, e.g. ``pharo-llm/Qwen2.5-Coder-1.5B-PT``) is merged into
-  its base model. When ``main`` holds no weights, the last ``checkpoint-N`` branch is used.
+"""The language models that label methods: instruction-tuned models served by Ollama
+(qwen3.8:27b, gemma4:12b, granite4.2:8b). Each is asked through the chat API, with thinking off
+and deterministic decoding, to continue a few-shot text.
 """
 from __future__ import annotations
 
 import os
-import re
 import time
 
 
 NUM_CTX = 8192   # Ollama context: prompt + answer must fit, or Ollama drops the start of the prompt
+CHAT_INSTRUCTION = ("Continue the text below: write only what comes after its last line, in exactly the "
+                    "format of the examples, and nothing else.\n\n")
 
 
 class ModelError(RuntimeError):
@@ -25,10 +18,7 @@ class ModelError(RuntimeError):
 
 
 def make_model(spec: str, cfg: dict):
-    spec = spec.strip()
-    if spec.startswith("hf:"):
-        return HFModel(spec[3:], cfg)
-    return OllamaModel(spec.removeprefix("ollama:"), cfg)
+    return OllamaModel(spec.strip().removeprefix("ollama:"), cfg)
 
 
 class OllamaModel:
@@ -49,20 +39,25 @@ class OllamaModel:
             raise ModelError(f"No Ollama server at {self.url}: start it with `ollama serve`.") from e
         if tag not in names and f"{tag}:latest" not in names:
             raise ModelError(f"Ollama model {tag!r} is not installed: ollama pull {tag}")
+        info = requests.post(f"{self.url}/api/show", json={"model": tag}, timeout=30).json()
+        self.thinks = "thinking" in (info.get("capabilities") or [])
 
     def describe(self) -> dict:
-        return {"backend": "ollama", "model": self.tag, "temperature": self.temperature, "seed": self.seed}
+        return {"backend": "ollama", "model": self.tag, "mode": "chat", "temperature": self.temperature, "seed": self.seed}
 
     def complete(self, prompt: str, max_tokens: int, stop: list[str]) -> str:
-        payload = {"model": self.tag, "prompt": prompt, "raw": True, "stream": False,
+        # a chat answer may put a blank line between its lines: keep only the real stops
+        payload = {"model": self.tag, "stream": False, "messages": [{"role": "user", "content": CHAT_INSTRUCTION + prompt}],
                    "options": {"temperature": self.temperature, "seed": self.seed, "num_predict": max_tokens,
-                               "stop": stop, "num_ctx": NUM_CTX}}
+                               "num_ctx": NUM_CTX, "stop": [s for s in stop if s.strip()]}}
+        if self.thinks:
+            payload["think"] = False
         for attempt in range(4):
             try:
-                r = self.requests.post(f"{self.url}/api/generate", json=payload, timeout=self.timeout)
+                r = self.requests.post(f"{self.url}/api/chat", json=payload, timeout=self.timeout)
                 if r.status_code < 500:
                     r.raise_for_status()
-                    return r.json().get("response", "")
+                    return r.json()["message"]["content"]
             except (self.requests.ConnectionError, self.requests.Timeout):
                 if attempt == 3:
                     raise
@@ -93,69 +88,3 @@ class OllamaEmbedder:
             n = sum(x * x for x in v) ** 0.5 or 1.0
             out.append([x / n for x in v])
         return out
-
-
-def _latest_checkpoint(repo: str) -> str | None:
-    from huggingface_hub import list_repo_refs
-    best = None
-    for b in list_repo_refs(repo).branches:
-        m = re.fullmatch(r"checkpoint-(\d+)", b.name)
-        if m and (best is None or int(m.group(1)) > best[0]):
-            best = (int(m.group(1)), b.name)
-    return best[1] if best else None
-
-
-def resolve_hf(spec: str) -> tuple[str, str]:
-    """``repo[@revision]`` -> (repo, revision); `main` without weights -> last checkpoint branch."""
-    from huggingface_hub import list_repo_files
-    repo, _, rev = spec.partition("@")
-    if rev:
-        return repo, rev
-    weights = [f for f in list_repo_files(repo) if f.endswith((".safetensors", ".bin"))]
-    if weights:
-        return repo, "main"
-    rev = _latest_checkpoint(repo)
-    if not rev:
-        raise ModelError(f"{repo} has no weights on main and no checkpoint-N branch.")
-    return repo, rev
-
-
-class HFModel:
-    def __init__(self, spec: str, cfg: dict):
-        try:
-            import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-        except ImportError as e:
-            raise ModelError("hf: models need torch, transformers and peft: .venv/bin/pip install -e '.[hf]'") from e
-        from huggingface_hub import list_repo_files
-        self.torch = torch
-        self.repo, self.revision = resolve_hf(spec)
-        self.name = f"hf:{self.repo}@{self.revision}"
-        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-        dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
-        files = set(list_repo_files(self.repo, revision=self.revision))
-        self.tok = AutoTokenizer.from_pretrained(self.repo, revision=self.revision)
-        if "adapter_config.json" in files:
-            from peft import PeftConfig, PeftModel
-            self.base = PeftConfig.from_pretrained(self.repo, revision=self.revision).base_model_name_or_path
-            base = AutoModelForCausalLM.from_pretrained(self.base, dtype=dtype)
-            model = PeftModel.from_pretrained(base, self.repo, revision=self.revision).merge_and_unload()
-        else:
-            self.base = None
-            model = AutoModelForCausalLM.from_pretrained(self.repo, revision=self.revision, dtype=dtype)
-        self.model = model.to(self.device).eval()
-        self.model.generation_config.max_length = None
-        torch.manual_seed(int(cfg.get("random_seed") or 42))
-
-    def describe(self) -> dict:
-        return {"backend": "hf", "model": self.repo, "revision": self.revision, "base_model": self.base,
-                "device": self.device, "decoding": "greedy"}
-
-    def complete(self, prompt: str, max_tokens: int, stop: list[str]) -> str:
-        ids = self.tok(prompt, return_tensors="pt").to(self.device)
-        with self.torch.no_grad():
-            out = self.model.generate(**ids, max_new_tokens=max_tokens, do_sample=False, stop_strings=stop,
-                                      tokenizer=self.tok, pad_token_id=self.tok.eos_token_id)
-        text = self.tok.decode(out[0][ids.input_ids.shape[1]:], skip_special_tokens=True)
-        cut = [text.index(s) for s in stop if s in text]
-        return text[:min(cut)] if cut else text
