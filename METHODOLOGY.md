@@ -44,7 +44,8 @@ mine → filter → one model labels a sample (open coding) until saturation
               → α < 0.667: stop, NOT_RELIABLE.md; a revised codebook or model list is a new
                 revision, measured on a new sample disjoint from the earlier ones
               → α ≥ 0.667: 200 methods for the experts, stratified by agreement level
-5. validate   two experts classify the 200 methods blind, each alone
+5. validate   two experts check the 200 methods in method_review.csv, each alone (the
+              models' label filled in, changed when wrong)
               → accuracy of each model (95% CI), experts' agreement (human baseline),
                 precision/recall per category, share of each task corrected by the experts (PPI)
 6. report     results/REPORT.md
@@ -272,8 +273,18 @@ Seeing a label anchors the judgement toward accepting it. With a single expert, 
 to know how hard the task is for humans.
 
 **Solution.**
-- **Blind classification:** each expert chooses the category from the codebook for each method,
-  without seeing any model's answer (a test checks that no model answer is in the expert file).
+- **Labels to correct, not to invent (the researcher's choice, `expert_prefill: true`).** In
+  `method_review.csv`, `expert_category` already holds the models' majority label (also kept in
+  `model_label`); the expert opens the file in a spreadsheet and changes only the wrong rows. Methods
+  where the models have no majority come with an empty `expert_category`. The expert also gets
+  `taxonomy.png` (the categories and their shares) and `codebook_review.csv` to validate the
+  taxonomy. This is the least work for the experts, and it has a known cost: pre-annotation speeds
+  annotation up but introduces biases (Fort & Sagot, LAW 2010), and annotators lean toward the label
+  they edit, which also raises their agreement with each other (Berzak et al., EMNLP 2016). A row
+  the expert never looked at cannot be told from a row they confirmed. So the accuracy of step 5 is
+  an upper bound, and the experts' α is not an independent human baseline. Step 5 reports how many
+  labels each expert changed (`changed_model_label` in `validation.json`). With
+  `expert_prefill: false` the file is blind and the accuracy is unbiased.
 - **Two experts, working alone.** Their agreement (Krippendorff's α, Cohen's κ) is the **human
   baseline**.
 - Where the experts disagree, they discuss and put the agreed answer in `returned/consensus/`.
@@ -459,7 +470,7 @@ population parameters*, Biometrika 40.
 | 7 | Experts' time on unreliable codebook | Gate at α ≥ 0.667 | Ahmed et al.; OLAF (WSESE 2026) |
 | 8 | Prompt sensitivity | Shuffled-prompt self-check | Camuffo et al. (2026) |
 | 9 | Small, partly wasted expert sample | 200 methods, stratified, weighted estimators | Cochran ch. 12; Gligorić et al. (NAACL 2025) |
-| 10 | Anchoring; no human baseline | Blind classification; two experts; consensus | Ahmed et al. (MSR 2025) |
+| 10 | Expert effort; no human baseline | CSV with the models' label filled in, corrected when wrong (anchoring documented, changes counted); taxonomy figure; two experts; consensus | Ahmed et al. (MSR 2025); Fort & Sagot (2010); Berzak et al. (2016) |
 | 11 | Biased category shares | Prediction-powered inference | Angelopoulos et al. (Science 2023); Egami et al. (NeurIPS 2023) |
 | 12 | When to stop | Prevalence-based saturation (kept) | De Paoli & Mathis (Q&Q) |
 | 13 | Reproducibility | Every answer stored; full reporting | Baltes et al. (EMSE) |
@@ -493,7 +504,7 @@ population parameters*, Biometrika 40.
   passed. Its numbers are quoted in Problems 14, 15 and 17; the next run uses the changes.
 - **The labelling model is also a classifier.** qwen3.8 named the categories and wrote the codebook,
   then classifies with it: it may agree with its own codebook more easily than the other models
-  (home advantage). The experts' blind classification is what measures every model on equal terms;
+  (home advantage). The experts' answers are what measure every model on equal terms;
   report qwen3.8's accuracy next to the others', not only the majority's.
 - **Accessors dominate** (about 30% in step 3, 16-24% in step 4). A trivial category inflates raw
   agreement; Gwet's AC1 and the per-category precision/recall of step 5 are the numbers to read.
@@ -567,5 +578,9 @@ population parameters*, Biometrika 40.
     https://doi.org/10.1177/1525822X980100020301
 25. Mistral AI. *Mistral-Small-24B-Instruct-2501* model card (IFEval 0.829).
     https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501
-26. Model comparison used for the model choice: *Qwen3.8 vs Qwen3.6 vs Gemma 4: 24GB GPU Test*,
+26. Fort, K., Sagot, B. *Influence of Pre-annotation on POS-tagged Corpus Development.* Fourth
+    Linguistic Annotation Workshop (LAW IV), ACL 2010, 56-63. https://aclanthology.org/W10-1807/
+27. Berzak, Y., Huang, Y., Barbu, A., Korhonen, A., Katz, B. *Anchoring and Agreement in Syntactic
+    Annotations.* EMNLP 2016.
+28. Model comparison used for the model choice: *Qwen3.8 vs Qwen3.6 vs Gemma 4: 24GB GPU Test*,
     kingy.ai, August 2026. https://kingy.ai/blog/qwen3-8-27b-vs-qwen3-6-27b-vs-gemma-4-31b/

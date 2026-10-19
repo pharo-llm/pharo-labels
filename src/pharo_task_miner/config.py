@@ -100,6 +100,7 @@ DEFAULTS: dict = {
         "classify_models": ["qwen3.8:27b", "gemma4:12b", "mistral-small3.2:24b"],
         "classify_sample_size": None,           # None = the sample-size calculator's n (384 at 95% / ±5%)
         "selfcheck_size": 100,                  # methods the first model classifies again, prompt shuffled
+        "expert_prefill": True,                 # the experts see the models' majority label and correct it (False: blind)
         "min_alpha": 0.667,                     # Krippendorff's alpha needed before the experts (tentative level)
         "gold_size": 200,                       # methods the experts classify (±5% on accuracy)
         "gold_min_per_stratum": 20,             # at least this many per agreement level (3/3, 2/3, none)

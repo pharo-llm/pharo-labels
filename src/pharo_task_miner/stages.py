@@ -641,7 +641,8 @@ def classify(cfg, args):
             with (out / "labels.csv").open(encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
             inductive_rows = [{"category": r["category"], "signature": r["method"], "summary": r["summary"]} for r in rows]
-            res["experts"] = lc.expert_pack(cls, res, inductive_rows, ev, log)
+            res["experts"] = lc.expert_pack(cls, res, inductive_rows, ev, log,
+                                            cfg.output_dir / "figures" / "category_distribution.png")
             write_json(cls.out / "agreement.json", res)
         run.counts.update({"alpha": res["krippendorff_alpha"], "reliable": res["reliable"]})
 

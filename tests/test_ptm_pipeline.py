@@ -164,8 +164,12 @@ class PipelineTest(unittest.TestCase):
             for f in ("README.md", "codebook_review.csv", "method_review.csv", "examples.md"):
                 self.assertTrue((lab / "expert_validation" / f).exists(), f)
             review = list(csv.DictReader((lab / "expert_validation" / "method_review.csv").open()))
-            self.assertNotIn("majority", review[0])                     # blind: no model answer shown
+            self.assertNotIn("majority", review[0])
+            majority = {r["method_id"]: r["majority"] for r in csv.DictReader((lab / "classify" / "labels.csv").open())}
+            self.assertTrue(all(r["model_label"] == majority[r["method_id"]] for r in review))   # the label shown to the experts
             self.assertIn(lc.RULE, (lab / "expert_validation" / "README.md").read_text())   # experts follow the models' rule
+            self.assertTrue(all(r["expert_category"] == r["model_label"] for r in review))   # pre-filled, changed only when wrong
+            self.assertTrue((lab / "expert_validation" / "taxonomy.png").exists())
             self.assertEqual(json.loads((lab / "classify" / "revisions.json").read_text())[0]["revision"], 1)
             # two experts return their files; validation
             for e in ("ann", "bob"):
@@ -179,6 +183,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(run("validate"), 0)
             v = json.loads((lab / "validated" / "validation.json").read_text())
             self.assertEqual(v["accuracy"]["majority"]["estimate"], 1.0)
+            self.assertEqual(set(v["changed_model_label"]), {"ann", "bob"})
             self.assertAlmostEqual(sum(t["share"] for t in v["final_taxonomy"]), 1.0, places=2)
             for f in ("saturation_curve.png", "category_distribution.png"):
                 self.assertTrue((tmp / "out" / "figures" / f).exists(), f)

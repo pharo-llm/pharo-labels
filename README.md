@@ -4,7 +4,7 @@ Which programming tasks does real Pharo code perform? This repository answers th
 it mines GitHub, keeps the engineered Pharo projects, and builds a taxonomy of the tasks their
 methods perform: a local model finds the categories (inductive coding, until saturation), three
 models of three families classify a new sample with the resulting codebook (deductive coding),
-and Pharo experts classify a stratified subsample blind, which gives each model's accuracy, the
+and Pharo experts check a stratified subsample (the models' label shown, corrected when wrong), which gives each model's accuracy, the
 experts' own agreement, and the share of each task in the corpus corrected for the models' errors. Benchmark generation lives in another repository.
 
 ```
@@ -32,7 +32,8 @@ NEW random sample (384) ── classified by qwen3.8 (Alibaba), gemma4 (Google),
 α < 0.667 ── NOT_RELIABLE.md: sharpen the codebook, classify again (a new revision: a new,
    │         disjoint sample; every revision is reported)
 α ≥ 0.667 ── EXPERT FILES: 200 methods stratified by level (more where models disagree),
-   │         classified blind by each expert, alone (expert_validation/returned/<expert>/)
+   │         checked by each expert, alone: method_review.csv with the models' label filled in,
+   │         changed when wrong; taxonomy.png (expert_validation/returned/<expert>/)
    ▼
 accuracy of each model (stratified, 95% CI) · experts' α (human baseline) · precision/recall
 share of each task in the corpus, corrected by the experts (PPI) · final taxonomy
@@ -86,7 +87,7 @@ The full explanation, with every problem, its solution and its sources: [METHODO
 | Gate | experts' time spent on a codebook the models cannot apply | no expert files below α = 0.667 (model-model agreement as the signal: Ahmed et al., MSR 2025) |
 | Prompt check | answers can depend on the prompt (Camuffo et al. 2026) | the first model again with the codebook and examples shuffled |
 | Stratified expert sample | a random sample wastes expert time on easy cases; mixing in hard cases biases a naive accuracy | more methods where models disagree, known weights, stratified estimators (Cochran 1977, ch. 12; Gligorić et al., NAACL 2025) |
-| Blind experts, two of them | showing the model's label anchors the expert; no human baseline | experts classify without the models' answers; their α is the baseline a model must approach (Ahmed et al.) |
+| Experts correct the models' label | expert time; showing a label anchors the expert (Fort & Sagot 2010; Berzak et al. 2016) | label filled in, changed when wrong; changes per expert counted in step 5; `expert_prefill: false` for a blind check |
 | Corrected shares | LLM labels bias prevalence estimates even at 80-90% accuracy (Egami et al., NeurIPS 2023) | prediction-powered inference: model shares corrected with the expert sample, valid 95% intervals (Angelopoulos et al., *Science* 2023) |
 | Reporting | reproducibility | model versions, prompts, every answer stored (Baltes et al., *Empirical Software Engineering*) |
 
@@ -98,7 +99,7 @@ The full explanation, with every problem, its solution and its sources: [METHODO
 | `results/labelling/taxonomy.csv`, `taxonomy.md`, `labels.csv`, `curve.csv` | inductive phase: categories, labelled methods, saturation curve |
 | `results/labelling/codebook_draft.csv` → `codebook.csv` | the model's codebook draft; your consolidated codebook |
 | `results/labelling/classify/` | deductive phase: every model's answers, `labels.csv`, `agreement.json`, `revisions.json` (every revision and its agreement), `gold_selection.csv` (strata and weights, not for the experts) |
-| `results/labelling/expert_validation/` | **what Pharo experts fill in** (`README.md` explains it); their files go back in `returned/<expert>/`, the agreed answers after discussion in `returned/consensus/` |
+| `results/labelling/expert_validation/` | **what Pharo experts fill in**: `method_review.csv` (the models' label already in `expert_category`: change only the wrong rows), `codebook_review.csv`, `taxonomy.png` (`README.md` explains them); their files go back in `returned/<expert>/`, the agreed answers after discussion in `returned/consensus/` |
 | `results/labelling/validated/` | **the final numbers**: `final_taxonomy.md`, `validation.json`, `to_discuss.csv` |
 | `results/labelling/labels.jsonl`, `codebook.json`, `plan.json`, `rounds/` | every inductive answer, the open-coding codebook, the settings and the methods drawn per round |
 | `results/figures/` | saturation curve, category distribution |

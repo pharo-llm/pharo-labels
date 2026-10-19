@@ -340,13 +340,12 @@ EXPERT_README = """# Expert validation of the Pharo task taxonomy
 Language models classified methods of real Pharo projects by the programming task they perform,
 with the codebook below. Your judgement is the reference the models are measured against, and it
 decides the final taxonomy. Work alone: do not discuss your answers with another expert before
-both are returned.
+both are returned. Open the CSV files in a spreadsheet (Excel, LibreOffice, Google Sheets).
 
-1. **method_review.csv**: {m} methods. Open the `url` (or read `source`) and write in
-   `expert_category` the codebook category that fits best, or `Other` with a name in
-   `other_name`. The models' answers are not shown on purpose. The rule the models followed,
-   to follow as well: {rule}
-2. **codebook_review.csv**: {n} categories with their definitions and examples.
+1. **method_review.csv**: {m} methods. {prefill}Open the `url` (or read `source`). The rule the
+   models followed, to follow as well: {rule}
+2. **taxonomy.png**: the task categories and their share of the labelled methods.
+3. **codebook_review.csv**: {n} categories with their definitions and examples.
    - `keep_yes_no`: is this a real, distinct kind of programming task in Pharo?
    - `rename_to`: a better name, if any.
    - `merge_into`: the category it is really the same as, if any.
@@ -378,14 +377,22 @@ To send the expert files anyway, set `MIN_ALPHA=0` in run.sh (and say so in the 
 """
 
 
-def expert_pack(cls: Classification, res: dict, labels_inductive: list[dict], ev: Path, log) -> dict:
+def expert_pack(cls: Classification, res: dict, labels_inductive: list[dict], ev: Path, log,
+                figure: Path | None = None) -> dict:
     gold, strata = cls.gold_sample(res)
     recs = cls.records(gold)
     names = [c["category"] for c in cls.codebook]
-    _csv(ev / "method_review.csv",
-         [{"method_id": m, "repository": recs[m]["full_name"], "method": recs[m]["signature"], "url": recs[m]["url"],
-           "source": coding.method_source(recs[m], 60), "expert_category": "", "other_name": "", "comments": ""}
-          for m in gold], ["method_id", "repository", "method", "url", "source", "expert_category", "other_name", "comments"])
+    import csv
+    with (cls.out / "labels.csv").open(encoding="utf-8") as f:
+        majority = {int(r["method_id"]): r["majority"] for r in csv.DictReader(f)}
+    prefill = bool(cls.s.get("expert_prefill", True))
+    suggested = {m: majority.get(m, "") for m in gold} if prefill else {}
+    methods = [{"method_id": m, "repository": recs[m]["full_name"], "method": recs[m]["signature"], "url": recs[m]["url"],
+                "source": coding.method_source(recs[m], 60), "model_label": suggested.get(m, ""),
+                "expert_category": suggested.get(m, ""),
+                "other_name": "", "comments": ""} for m in gold]
+    _csv(ev / "method_review.csv", methods, ["method_id", "repository", "method", "url", "source", "model_label",
+                                             "expert_category", "other_name", "comments"])
     by = defaultdict(list)
     for r in labels_inductive:
         by[r["category"]].append(r)
@@ -406,7 +413,14 @@ def expert_pack(cls: Classification, res: dict, labels_inductive: list[dict], ev
         md.append("")
     _csv(ev / "codebook_review.csv", cb_rows, list(cb_rows[0]))
     (ev / "examples.md").write_text("\n".join(md), encoding="utf-8")
-    (ev / "README.md").write_text(EXPERT_README.format(m=len(gold), n=len(names), rule=RULE), encoding="utf-8")
+    note = ("`expert_category` already holds the label proposed by the models: change it only when it is "
+            "wrong (to another category of the codebook, or `Other` with a name in `other_name`); an empty "
+            "`expert_category` (the models disagreed) needs your choice. ") if prefill else (
+            "Write in `expert_category` the codebook category that fits best, or `Other` with a name in `other_name`. ")
+    (ev / "README.md").write_text(EXPERT_README.format(m=len(gold), n=len(names), rule=RULE, prefill=note), encoding="utf-8")
+    if figure is not None and figure.exists():
+        import shutil
+        shutil.copyfile(figure, ev / "taxonomy.png")
     log(f"Expert files: {len(gold)} methods (" + ", ".join(f"{h}: {s['m']} of {s['N']}" for h, s in sorted(strata.items()))
         + f") -> {ev}")
     return {"methods": len(gold), "strata": strata}

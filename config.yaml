@@ -117,7 +117,9 @@ labelling:                           # ./run.sh label — settings at the top of
   classify_sample_size: null         # null = the sample-size calculator's n
   selfcheck_size: 100                # the first model again, codebook and examples shuffled: prompt sensitivity
   min_alpha: 0.667                   # Krippendorff's alpha below this: NOT_RELIABLE.md, no expert files
-  gold_size: 200                     # methods the experts classify blind (stratified by the models' agreement)
+  gold_size: 200                     # methods the experts check (stratified by the models' agreement)
+  expert_prefill: true               # method_review.csv holds the models' majority label, the expert changes it when wrong
+                                     # (faster; anchors the experts toward the models: METHODOLOGY.md, problem 10). false = blind
   gold_min_per_stratum: 20
   random_seed: 42
 

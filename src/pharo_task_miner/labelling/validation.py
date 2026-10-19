@@ -245,7 +245,14 @@ def validate(out: Path, log) -> dict | None:
                   f"{t['recall'] if t['recall'] is not None else '–'} |")
     (vdir / "final_taxonomy.md").write_text("\n".join(md) + "\n", encoding="utf-8")
 
-    result = {"experts": enames, "consensus_file": bool(consensus), "reference": dict(how), "methods_with_reference": len(ref),
+    # how often each expert changed the label the models proposed (method_review.csv, model_label):
+    # with a pre-filled label, the experts lean toward it (Fort & Sagot 2010; Berzak et al. 2016)
+    changed = {}
+    for e, files in experts.items():
+        rows = [r for r in files["method_review.csv"] if r.get("model_label") and r.get("expert_category")]
+        if rows:
+            changed[e] = {"methods": len(rows), "changed": sum(_norm(r["expert_category"]) != _norm(r["model_label"]) for r in rows)}
+    result = {"experts": enames, "changed_model_label": changed, "consensus_file": bool(consensus), "reference": dict(how), "methods_with_reference": len(ref),
               "human_alpha": human_alpha, "expert_pairs": expert_pairs, "model_vs_reference_alpha": model_vs_ref,
               "accuracy": acc, "models": models, "strata": strata,
               "decisions": {"dropped": sum(1 for d in decisions.values() if d.get("keep") is False and not d.get("merge")),
@@ -262,6 +269,8 @@ def validate(out: Path, log) -> dict | None:
         log(f"  {mod}: {acc[mod]['estimate']:.0%} [{acc[mod]['ci_low']:.0%}, {acc[mod]['ci_high']:.0%}]")
     if human_alpha is not None:
         log(f"Experts' agreement: Krippendorff's alpha {human_alpha}")
+    for e, c in changed.items():
+        log(f"  {e} changed the models' label of {c['changed']} of {c['methods']} methods")
     log(f"Final taxonomy: {len(table)} categories -> {vdir / 'final_taxonomy.md'}"
         + (f"; {len(disputed)} items to discuss: {vdir / 'to_discuss.csv'}" if disputed else ""))
     return result
