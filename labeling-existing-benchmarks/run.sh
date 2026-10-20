@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The code benchmarks LLMs are evaluated on: download them once into ../data/already-benchmarks/, and name the TASK
+# The code benchmarks LLMs are evaluated on: download them once into ../data/existing-benchmarks/, and name the TASK
 # each one asks (input -> output). The clustering is its own project: ../clustering-existing-benchmarks/.
 #
 #   ./run.sh                          download, then tasks
-#   ./run.sh download                 benchmarks -> data/already-benchmarks/ (no model)
+#   ./run.sh download                 benchmarks -> data/existing-benchmarks/ (no model)
 #   ./run.sh tasks                    the TASK each benchmark asks -> results/tasks/
 #   SAMPLE=5 ./run.sh tasks           pilot: 5 items per benchmark
 #   ONLY="swebench_pro nl2repo" ./run.sh
@@ -27,7 +27,7 @@ STEPS=("$@")
 for s in "${STEPS[@]}"; do
   case "$s" in download|tasks) ;; *) echo "Unknown step: $s (download | tasks)"; exit 1 ;; esac
 done
-mkdir -p ../data/already-benchmarks results/tasks
+mkdir -p ../data/existing-benchmarks results/tasks
 
 if [ ! -x .venv/bin/python ] || ! .venv/bin/python -c 'import pyarrow' 2>/dev/null; then
   py=${PYTHON:-}

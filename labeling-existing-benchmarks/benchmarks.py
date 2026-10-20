@@ -1,7 +1,7 @@
 """The code benchmarks LLMs are evaluated on, used by every part of this folder (tasks/).
 
 - BENCHMARKS: each benchmark (a scenario of a benchmark counts as its own), pinned to a revision
-- load_rows: downloads a benchmark once into ../data/already-benchmarks/<benchmark>/<revision>/, then reads it there
+- load_rows: downloads a benchmark once into ../data/existing-benchmarks/<benchmark>/<revision>/, then reads it there
 - card: one item as the labelling model sees it: what the evaluated model receives, the reference answer, how it
   is checked
 - Ollama: the client of the local labelling models
@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
-DATA = HERE.parent / "data" / "already-benchmarks"      # shared by the projects of pharo-labels
+DATA = HERE.parent / "data" / "existing-benchmarks"      # shared by the projects of pharo-labels
 RESULTS = HERE / "results"
 HF = "https://huggingface.co/datasets"
 
@@ -246,7 +246,7 @@ def _sha(text: str) -> str:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Download every benchmark into ../data/already-benchmarks/")
+    ap = argparse.ArgumentParser(description="Download every benchmark into ../data/existing-benchmarks/")
     ap.add_argument("--only", nargs="*", choices=list(BENCHMARKS))
     args = ap.parse_args(argv)
     for key in args.only or list(BENCHMARKS):

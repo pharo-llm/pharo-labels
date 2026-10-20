@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # What the existing code benchmarks really ask, according to each of three models on its own: every item in a
 # category, then a subcategory, and its actual task; then how much the three models agree. Benchmarks from
-# ../data/already-benchmarks/ (shared).
+# ../data/existing-benchmarks/ (shared).
 #
 #   ./run.sh                              everything: each model -> OUT/<model>/, then OUT/comparison/
 #   SAMPLE=1 OUT=results/pilot ./run.sh   pilot: 1 item per benchmark, in a folder of its own
 #   ./run.sh figures                      redraw every figure and the comparison from the items.csv files, no model
-#   ./run.sh download                     only download the benchmarks into ../data/already-benchmarks/
+#   ./run.sh download                     only download the benchmarks into ../data/existing-benchmarks/
+#   oarsub -S ./job.oar.sh                the same on larochette, the three models at once on the GPUs
 #   ONLY="swebench_pro nl2repo" ./run.sh
 #
 # OUT/<model>/: clusters.md, items.csv, categories.csv, subcategories.csv, figures/ (one model's view)
@@ -22,13 +23,18 @@ ONLY="${ONLY:-}"                             # "" = all benchmarks
 MAX_CATEGORIES="${MAX_CATEGORIES:-20}"
 MAX_SUBCATEGORIES="${MAX_SUBCATEGORIES:-8}"  # per category
 MIN_ITEMS="${MIN_ITEMS:-5}"                  # a category with fewer items is not split
-WORKERS="${WORKERS:-1}"                      # requests sent to Ollama at the same time (4 on larochette)
+WORKERS="${WORKERS:-1}"                      # requests sent to Ollama at the same time, per model (4 on larochette)
+PARALLEL="${PARALLEL:-0}"                    # 0 = one model after the other; 1 = all at once (one GPU each, larochette)
+# DeepSWE is gated: accept its terms on https://huggingface.co/datasets/datacurve/deep-swe, then give your token here,
+# or better in ../.env (export HF_TOKEN=hf_...), which is never committed; without it DeepSWE is skipped
+HF_TOKEN="${HF_TOKEN:-}"
 # ===========================================================================================
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 if [ -f ../.env ]; then . ../.env; fi
+export HF_TOKEN
 STEP="${1:-cluster}"
 case "$STEP" in cluster|figures|download) ;; *) echo "Unknown step: $STEP (cluster | figures | download)"; exit 1 ;; esac
 folder() { echo "$1" | tr ':/' '__'; }
@@ -66,12 +72,18 @@ for m in $MODELS; do
   ollama list | awk 'NR>1 {print $1}' | grep -qx -e "$m" -e "$m:latest" || { echo "Downloading $m …"; ollama pull "$m"; }
 done
 
-for m in $MODELS; do
-  echo "=== $m -> $OUT/$(folder "$m")/ ==="
-  .venv/bin/python -I cluster.py --model "$m" --out "$OUT/$(folder "$m")" --sample "$SAMPLE" --workers "$WORKERS" \
+run_model() {       # run_model <model>: the whole clustering by this model, into OUT/<model>/, log OUT/<model>/run.log
+  local m="$1" dir="$OUT/$(folder "$1")"
+  mkdir -p "$dir"
+  echo "=== $m -> $dir/ ==="
+  .venv/bin/python -I cluster.py --model "$m" --out "$dir" --sample "$SAMPLE" --workers "$WORKERS" \
     --max-categories "$MAX_CATEGORIES" --max-subcategories "$MAX_SUBCATEGORIES" --min-items "$MIN_ITEMS" \
-    ${only[@]+"${only[@]}"} 2>&1 | tee -a "$OUT/run.log" || echo "FAILED: $m (see $OUT/run.log); the others go on"
+    ${only[@]+"${only[@]}"} > >(tee -a "$dir/run.log") 2>&1 || echo "FAILED: $m (see $dir/run.log); the others go on"
+}
+for m in $MODELS; do
+  if [ "$PARALLEL" = 1 ]; then run_model "$m" & else run_model "$m"; fi
 done
+wait
 echo "=== comparison -> $OUT/comparison/ ==="
 # shellcheck disable=SC2086
 .venv/bin/python -I compare.py --models $MODELS --out "$OUT" 2>&1 | tee -a "$OUT/run.log"

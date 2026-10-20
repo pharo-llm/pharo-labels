@@ -5,7 +5,7 @@ them, each with its own code folder and its own results folder:
 
 ```
 benchmarks.py            the benchmarks (pinned sources), their download, item cards, Ollama client
-../data/already-benchmarks/  every benchmark, downloaded once, shared with ../clustering-existing-benchmarks/
+../data/existing-benchmarks/  every benchmark, downloaded once, shared with ../clustering-existing-benchmarks/
 tasks/                   the TASK each benchmark asks (input -> output, e.g. resolve an issue with a patch)
 results/tasks/           results of tasks/
 run.sh                   download + tasks
@@ -14,7 +14,7 @@ oar.sh                   any of the steps on larochette
 
 ```bash
 ./run.sh                          # download, then tasks
-./run.sh download                 # benchmarks -> ../data/already-benchmarks/ (no model)
+./run.sh download                 # benchmarks -> ../data/existing-benchmarks/ (no model)
 ./run.sh tasks                    # -> results/tasks/
 SAMPLE=5 ./run.sh tasks           # pilot: 5 items per benchmark
 ```
@@ -30,7 +30,7 @@ already labelled, but without the macOS `.venv`, then submit from the frontend:
 
 ```bash
 rsync -av --exclude .venv --exclude __pycache__ ../labeling-existing-benchmarks <frontend>:pharo-labels/
-rsync -av ../data <frontend>:pharo-labels/        # the shared downloads (../data/already-benchmarks/)
+rsync -av ../data <frontend>:pharo-labels/        # the shared downloads (../data/existing-benchmarks/)
 rsync -av ../.env <frontend>:pharo-labels/        # only for DeepSWE (HF_TOKEN)
 ssh <frontend> 'cd pharo-labels/labeling-existing-benchmarks && oarsub -S ./oar.sh'
 ```

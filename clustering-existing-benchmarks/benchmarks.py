@@ -1,7 +1,7 @@
 """The code benchmarks LLMs are evaluated on, used by the clustering (cluster.py).
 
 - BENCHMARKS: each benchmark (a scenario of a benchmark counts as its own), pinned to a revision
-- load_rows: downloads a benchmark once into ../data/already-benchmarks/<benchmark>/<revision>/, then reads it there
+- load_rows: downloads a benchmark once into ../data/existing-benchmarks/<benchmark>/<revision>/, then reads it there
 - card: one item as the labelling model sees it: what the evaluated model receives, the reference answer, how it
   is checked
 - Ollama: the client of the local labelling models
@@ -22,10 +22,14 @@ import urllib.error
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
-DATA = HERE.parent / "data" / "already-benchmarks"      # shared by the projects of pharo-labels
+DATA = HERE.parent / "data" / "existing-benchmarks"      # shared by the projects of pharo-labels
 RESULTS = HERE / "results"
 HF = "https://huggingface.co/datasets"
 
+# The clustering looks at the PROBLEMS, so each problem counts once: the scenarios that only ask something else about
+# problems already here are left out (BigCodeBench-Instruct = the same 1,140 problems as BigCodeBench-Complete,
+# reworded; LiveCodeBench test output prediction and code execution = 182 and 92 problems of LiveCodeBench code
+# generation). They are kept in ../labeling-existing-benchmarks, which names the task (the target) of each.
 # scenario -> source. kind: hf_parquet | hf_jsonl_stream | hf_task_dirs | github_task_dirs
 # group: "frontier" = in 2026 model cards of large AI companies; "classic" = reference benchmark of the surveys
 BENCHMARKS = {
@@ -37,24 +41,15 @@ BENCHMARKS = {
                      rev="b2d74c91837c3f2a20c1299ae98133cbe7cfa077",
                      files=["data/test-00000-of-00001-d5781c9c51e02795.parquet"],
                      ref="Austin et al. 2021; Liu et al., NeurIPS 2023"),
-    "bigcodebench_complete": dict(name="BigCodeBench-Complete", group="classic", kind="hf_parquet",
-                                  repo="bigcode/bigcodebench", rev="b74c0d0bf70d2c0bc459be537895cca163007f1a",
-                                  files=["data/v0.1.4-00000-of-00001.parquet"], ref="Zhuo et al., ICLR 2025"),
-    "bigcodebench_instruct": dict(name="BigCodeBench-Instruct", group="classic", kind="hf_parquet",
+    "bigcodebench_complete": dict(name="BigCodeBench", group="classic", kind="hf_parquet",
                                   repo="bigcode/bigcodebench", rev="b74c0d0bf70d2c0bc459be537895cca163007f1a",
                                   files=["data/v0.1.4-00000-of-00001.parquet"], ref="Zhuo et al., ICLR 2025"),
     # code generation: the six release files (4.5 GB with their tests) are streamed; only the problem is kept
-    "livecodebench_codegen": dict(name="LiveCodeBench code generation", group="frontier", kind="hf_jsonl_stream",
+    "livecodebench_codegen": dict(name="LiveCodeBench", group="frontier", kind="hf_jsonl_stream",
                                   repo="livecodebench/code_generation_lite", rev="0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
                                   files=[f"test{i}.jsonl" for i in ("", 2, 3, 4, 5, 6)], ref="Jain et al., ICLR 2025",
                                   keep=["question_id", "question_title", "question_content", "starter_code",
                                         "public_test_cases", "platform"]),
-    "livecodebench_testoutput": dict(name="LiveCodeBench test output prediction", group="frontier", kind="hf_parquet",
-                                     repo="livecodebench/test_generation", rev="6f3ac40bbecf81eba15899139d279b077f2816fd",
-                                     files=["test.parquet"], ref="Jain et al., ICLR 2025"),
-    "livecodebench_execution": dict(name="LiveCodeBench code execution", group="frontier", kind="hf_parquet",
-                                    repo="livecodebench/execution-v2", rev="ff6ea0e2a638001006ddcc41259eff23a4283fb2",
-                                    files=["data/test-00000-of-00001.parquet"], ref="Jain et al., ICLR 2025"),
     "swebench_verified": dict(name="SWE-bench Verified", group="frontier", kind="hf_parquet",
                               repo="princeton-nlp/SWE-bench_Verified", rev="c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
                               files=["data/test-00000-of-00001.parquet"], ref="Jimenez et al., ICLR 2024; OpenAI 2024"),
@@ -246,7 +241,7 @@ def _sha(text: str) -> str:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Download every benchmark into ../data/already-benchmarks/")
+    ap = argparse.ArgumentParser(description="Download every benchmark into ../data/existing-benchmarks/")
     ap.add_argument("--only", nargs="*", choices=list(BENCHMARKS))
     args = ap.parse_args(argv)
     for key in args.only or list(BENCHMARKS):

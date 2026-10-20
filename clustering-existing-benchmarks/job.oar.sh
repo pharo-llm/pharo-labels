@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# OAR job: ./run.sh of the clustering on one larochette node (4 x AMD MI210, 64 GiB each): the three models put
-# every item of every benchmark in a category and a subcategory, with figures.
+# OAR job: everything ./run.sh does, from the beginning, on one larochette node (4 x AMD MI210, 64 GiB each):
+# installs Ollama with its ROCm add-on, starts it on the GPUs, downloads the benchmarks and the three models, then
+# the three models cluster every item AT THE SAME TIME (about 20 GB each: one per GPU), then the comparison and
+# every figure.
 #
-#   oarsub -S ./oar.sh                                    from this folder on the frontend: every item -> results/
-#   SAMPLE=1 OUT=results/pilot oarsub -S ./oar.sh         pilot (run.sh settings pass through)
+#   oarsub -S ./job.oar.sh                                  from this folder on the frontend: every item -> results/
+#   SAMPLE=1 OUT=results/pilot oarsub -S ./job.oar.sh       pilot: 1 item per benchmark (run.sh settings pass through)
 #
-# Ollama (with its ROCm add-on) is installed in .ollama-bin/ and the models kept in .ollama-models/, both reused by
-# the next jobs. Resumes: every answer already in OUT/answers/ is reused, so a job that runs out of walltime is
-# simply resubmitted.
+# Log of the job: job.<jobid>.out / .err here. Ollama is installed in .ollama-bin/ and the models kept in
+# .ollama-models/, both reused by the next jobs. Resumes: every answer already saved in results/ is reused, so a job
+# that runs out of walltime is simply resubmitted. DeepSWE needs HF_TOKEN (in run.sh or ../.env).
 #
 #OAR -q default
 #OAR -p larochette
 #OAR -l host=1,walltime=55:00:00
 #OAR -n benchmark-clusters
-#OAR -O results/oar.%jobid%.out
-#OAR -E results/oar.%jobid%.err
+#OAR -O job.%jobid%.out
+#OAR -E job.%jobid%.err
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,8 +26,11 @@ OLLAMA_DIR="$HERE/.ollama-bin"
 export OLLAMA_MODELS="${OLLAMA_MODELS:-$HERE/.ollama-models}"
 export OLLAMA_HOST="127.0.0.1:11434"      # host=1: the node is this job's alone
 export OLLAMA_NOPRUNE=1
-export WORKERS="${WORKERS:-4}"            # requests at the same time, one Ollama slot each
+export PARALLEL="${PARALLEL:-1}"          # the three models at once
+export WORKERS="${WORKERS:-4}"            # requests at the same time per model, one Ollama slot each
 export OLLAMA_NUM_PARALLEL="$WORKERS"
+export OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-3}"     # the three stay loaded, one GPU each
+export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:--1}"                  # never unloaded during the job
 OLLAMA_LOG="results/ollama.${OAR_JOB_ID:-manual}.log"
 OLLAMA_PID=""
 
@@ -64,7 +69,7 @@ fi
 export PATH="$OLLAMA_DIR/bin:$PATH"
 ollama --version || true
 
-# 2. Start the server here, so run.sh finds it running and uses it
+# 2. Start the server here, on every GPU, so run.sh finds it running and uses it
 ollama serve > "$OLLAMA_LOG" 2>&1 &
 OLLAMA_PID=$!
 for _ in $(seq 120); do
@@ -81,6 +86,9 @@ else
   grep -iE 'inference compute|gpu|rocm|amdgpu' "$OLLAMA_LOG" | head -n 30 || true
 fi
 
-# 3. The clustering (the models are pulled on the first job; every answer already saved is reused)
+# 3. The benchmarks (into ../data/existing-benchmarks/, skipped when already there), then everything of run.sh:
+#    the models pulled, the three clusterings at once, the comparison, the figures
+./run.sh download
 ./run.sh
+rocm-smi --showmemuse 2>/dev/null || true
 log "Job finished: results in $HERE/results"
