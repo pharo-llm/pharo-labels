@@ -1,3 +1,5 @@
 .venv/
 data/
 results/
+.ollama-bin/
+.ollama-models/

@@ -12,6 +12,23 @@ ONLY="swebench_pro nl2repo" ./run.sh
 
 Needs Python ≥ 3.10 and [Ollama](https://ollama.com) with `qwen3.8:27b` (pulled automatically).
 
+### On an OAR cluster
+
+`oar.sh` runs `./run.sh` on one larochette node (4 × AMD MI210, walltime 55 h), installing Ollama and its ROCm
+add-on in `.ollama-bin/` and keeping the model in `.ollama-models/` for the next jobs. Send the folder with what is
+already labelled, but without the macOS `.venv`, then submit from the frontend:
+
+```bash
+rsync -av --exclude .venv --exclude __pycache__ ../labeling-existing-benchmarks <frontend>:pharo-labels/
+rsync -av ../.env <frontend>:pharo-labels/        # only for DeepSWE (HF_TOKEN)
+ssh <frontend> 'cd pharo-labels/labeling-existing-benchmarks && oarsub -S ./oar.sh'
+```
+
+Items already in `results/answers.jsonl` are reused, never relabelled; a job that runs out of walltime is resubmitted.
+Copy `results/` back with `rsync -av <frontend>:pharo-labels/labeling-existing-benchmarks/results/ results/`.
+`tasks.csv`, `tasks.md`, `benchmarks.csv` and `consolidation.json` are rewritten at the end of each run from the
+benchmarks of that run only, so finish with a run of all of them (not `ONLY=…`).
+
 ## Benchmarks
 
 | Benchmark | Group | Source (pinned revision in `label_benchmarks.py`) |

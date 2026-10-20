@@ -402,7 +402,9 @@ def main(argv=None) -> int:
             items = [card(key, r) for r in rows]
             if b["kind"] in ("hf_parquet", "hf_jsonl_stream"):
                 items = _draw(sorted(items), args.sample, args.seed)
-            print(f"{b['name']}: {len(rows)} items downloaded, {len(items)} labelled", flush=True)
+            todo = sum((key, item_id, _sha(prompt(text)), args.model) not in done for item_id, text in items)
+            print(f"{b['name']}: {len(rows)} items downloaded, {len(items) - todo} of {len(items)} already labelled, "
+                  f"labelling {todo} …", flush=True)
             got = []
             for item_id, text in items:
                 p = prompt(text)
@@ -415,6 +417,7 @@ def main(argv=None) -> int:
                     log.write(json.dumps(done[k], ensure_ascii=False) + "\n")
                     log.flush()
                 got.append(done[k])
+            print(f"{b['name']}: {len(got)} of {len(items)} labelled", flush=True)
             per[key] = {"size": len(rows), "answers": got}
 
     print("Consolidating: the task of each benchmark, then one list …", flush=True)
