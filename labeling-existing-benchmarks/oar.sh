@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # OAR job: ./run.sh on one larochette node (4 x AMD MI210, 64 GiB each).
 #
-#   oarsub -S ./oar.sh                               from this folder on the frontend
+#   oarsub -S ./oar.sh                               from this folder on the frontend: every step
+#   STEPS="tasks" oarsub -S ./oar.sh                 only some steps (download | tasks)
 #   SAMPLE=5 ONLY="nl2repo" oarsub -S ./oar.sh       (run.sh settings pass through)
 #
 # Ollama (with its ROCm add-on) is installed in .ollama-bin/ and the model kept in .ollama-models/, both reused by
-# the next jobs. Resumes: results/answers.jsonl is never truncated and every item already in it is reused, so a job
+# the next jobs. Resumes: the answers in results/ are never truncated and every item already in them is reused, so a job
 # that runs out of walltime is simply resubmitted.
 #
 #OAR -q default
@@ -78,6 +79,7 @@ else
   grep -iE 'inference compute|gpu|rocm|amdgpu' "$OLLAMA_LOG" | head -n 30 || true
 fi
 
-# 3. The labelling (pulls the model on the first job, then reuses every answer already in results/answers.jsonl)
-./run.sh
+# 3. The steps (the model is pulled on the first job; every answer already in results/ is reused)
+# shellcheck disable=SC2086
+./run.sh ${STEPS:-download tasks}
 log "Job finished: results in $HERE/results"
