@@ -6,4 +6,4 @@ __pycache__/
 # everything produced by a run
 results/
 .snapshot_download/
-results/.snapshot_staging/
+**/results/.snapshot_staging/

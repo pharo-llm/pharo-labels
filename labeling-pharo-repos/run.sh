@@ -19,7 +19,8 @@
 #   ./run.sh pull | push                        get / save all results on Hugging Face
 #
 # Everything goes to results/ (start with results/REPORT.md); the experts' files are in
-# results/labelling/expert_validation/. Tokens are asked once and kept in .env (git-ignored).
+# results/labelling/expert_validation/. Tokens are asked once and kept in ../.env (git-ignored, shared with
+# ../labeling-existing-benchmarks).
 
 # ============================== SETTINGS ===================================================
 # --- step 1: mining
@@ -66,19 +67,20 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 MINER="$ROOT/.venv/bin/pharo-miner"
 LOG=results/run.log
-if [ -f .env ]; then . ./.env; fi
+ENV_FILE="$ROOT/../.env"
+if [ -f "$ENV_FILE" ]; then . "$ENV_FILE"; fi
 
 # ---------------------------------------------------------------------------- helpers
-ask_secret() {   # ask_secret VAR "description": ask once (hidden), keep it in .env
+ask_secret() {   # ask_secret VAR "description": ask once (hidden), keep it in ../.env
   local var="$1" what="$2" val
   if [ -n "${!var:-}" ]; then export "$var"; return 0; fi
   if ! { : < /dev/tty; } 2>/dev/null; then
-    echo "$var is required ($what) but there is no terminal to ask on. Add 'export $var=...' to $ROOT/.env"; exit 1
+    echo "$var is required ($what) but there is no terminal to ask on. Add 'export $var=...' to $ENV_FILE"; exit 1
   fi
   read -rsp "$what — $var (input hidden): " val < /dev/tty; echo
   val=$(printf '%s' "$val" | LC_ALL=C sed $'s/\x1b\\[[0-9;?]*[A-Za-z~]//g' | LC_ALL=C tr -d '[:cntrl:][:space:]')
   [ -n "$val" ] || { echo "$var is required."; exit 1; }
-  umask 077; printf 'export %s=%q\n' "$var" "$val" >> .env; export "$var=$val"; echo "Saved $var to .env"
+  umask 077; printf 'export %s=%q\n' "$var" "$val" >> "$ENV_FILE"; export "$var=$val"; echo "Saved $var to $ENV_FILE"
 }
 
 run_logged() {   # run, show, and append the output to the log; returns the command's status
