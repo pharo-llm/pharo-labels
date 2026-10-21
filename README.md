@@ -1,14 +1,20 @@
 # Pharo benchmark research
 
-Which programming behaviours does real Pharo code exhibit, and which ones do the code benchmarks that LLMs are
-evaluated on actually test? This repository answers the first half of that question with a reproducible pipeline:
-from the Pharo repositories mined on GitHub to **two final taxonomies of programming behaviours** — one built from
-real Pharo methods, one built from the tasks of the existing benchmarks — each discovered independently by three
-LLM annotators of three model families until saturation, then merged into one shared taxonomy per source.
+Which programming behaviours does real Pharo code exhibit, which of them do the code benchmarks LLMs are evaluated
+on actually test, and how well do LLMs handle the ones that matter in Pharo? This repository answers these
+questions with one reproducible pipeline of 13 phases:
+
+1. **Stage 1 (phases 1–6), runnable today:** from the Pharo repositories mined on GitHub and the tasks of 12
+   existing benchmarks to **two final taxonomies of programming behaviours**. One is built from real Pharo methods,
+   the other from the benchmark tasks. Three LLM annotators of three model families discover each one
+   independently until saturation, then the three versions are merged.
+2. **Stage 2 (phases 7–13), written but not yet adapted to the two taxonomies:** validate the taxonomies on new
+   samples (AI agreement and experts), measure how often each behaviour occurs in Pharo, compare Pharo with the
+   benchmarks, build executable Pharo benchmark tasks, validate them, and evaluate models on them.
+
+**The whole pipeline, phase by phase, with its figures: [docs/PIPELINE.md](docs/PIPELINE.md).**
 
 ![The pipeline, from the repositories to the two final taxonomies](docs/pipeline.png)
-
-**The whole pipeline, step by step, with its figures: [docs/PIPELINE.md](docs/PIPELINE.md).**
 
 ## Run
 
@@ -25,191 +31,100 @@ PROFILE=smoke ./run.sh      # a few items only, in results-smoke/: checks that e
 python -m pbr diagram       # redraw docs/pipeline.png
 ```
 
-Needs only Python ≥ 3.10, git and [Ollama](https://ollama.com). Every number of a run is in `results/SUMMARY.md`;
-every phase folder has a `README.md` explaining its files.
+Requirements: Python ≥ 3.10, git, curl and [Ollama](https://ollama.com). Everything else (models, Pharo image,
+benchmarks, corpus) is obtained by the setup. Expect a large disk and about 20 GB of free memory: the largest
+model, gemma4:31b, takes 19 GB. Profiles: `pilot` (default, small samples), `full`, `smoke`.
 
-## The pipeline (stage 1: phases 1–6)
+## The 13 phases
 
-### Setup — every dependency before any phase (`pbr/setup.py`)
+| # | Phase | In → out | Humans |
+|---|---|---|---|
+| 1 | Repository selection | 1,585 repositories → hard filters + weighted quality score → ≈ 1,087 selected | |
+| 2 | Literature ingestion | 12 benchmarks → 6,433 tasks (4,372 distinct problems) | |
+| 3 | Corpus and method filters | ≈ 1.84 M methods → a decision per method, taken on its syntax tree | |
+| 4 | Representative samples | 99 % confidence ±5 % start samples (663 methods, 577 problems) + ordered pools | |
+| 5 | Discovery until saturation | 3 annotators × 2 sources → 6 taxonomies | |
+| 6 | The two final taxonomies | per source, 3 taxonomies merged (embeddings + editor) → `taxonomy_v1.json` | review (optional) |
+| 7 | Annotation *(stage 2)* | new samples classified with the taxonomy by the 3 annotators, independently | |
+| 8 | Agreement and expert validation | Krippendorff's α, blinded expert workbook, adjudication → `taxonomy_v2` | experts |
+| 9 | Pharo behaviour profile | large random sample → design-weighted frequency of every behaviour | |
+| 10 | Coverage | Pharo × benchmarks per behaviour: both · Pharo only · literature only · investigate | |
+| 11 | Benchmark construction | behaviour contracts, then new Pharo tasks (reference + SUnit tests) from real seeds | selection (optional) |
+| 12 | Benchmark validation | 5 levels: executes · independent oracle · valid mutants · behaviour alignment · audit | audit |
+| 13 | Model evaluation | every model × every task variant (generation, completion, bug repair), in the image | |
 
-`./run.sh` first obtains what the phases need and stops if one cannot be obtained (log `results/logs/00_setup.log`;
-a complete setup takes seconds):
+`./run.sh` runs phases 1–6. Phases 7–13 still expect one shared taxonomy instead of the two produced by phase 6;
+asking for them says so.
 
-| Dependency | How |
+## Models
+
+All local, through Ollama (`config.yaml` → `llm`, `benchmark`, `evaluation`):
+
+| Role | Phase | Model |
+|---|---|---|
+| annotators (3 families, never shown each other's answers) | 5, 7, 9 | `qwen3.8:27b` (Alibaba) · `gemma4:31b` (Google) · `mistral-small3.2:24b` (Mistral AI) |
+| taxonomy editor (judges merges, writes definitions) | 6 | `qwen3.8:27b` |
+| concept similarity (embeddings) | 5, 6 | `nomic-embed-text` |
+| task author (reference, tests, statement) | 11 | `qwen3.8:27b` |
+| behaviour contracts | 11 | `gemma4:31b` |
+| independent tests | 12 | `gemma4:31b` · `mistral-small3.2:24b` |
+| evaluated models | 13 | `qwen3.8:27b` · `gemma4:31b` · `mistral-small3.2:24b` (+ the reference solutions, which must score 100 %) |
+
+The contract and test models are of other families than the task author, so they cannot share its
+misunderstandings. In phase 13, every evaluated model also helped build the benchmark: report that with the results.
+
+## Setup (`pbr/setup.py`, log `results/logs/00_setup.log`)
+
+`./run.sh` obtains every dependency before the first phase, and stops if one cannot be obtained:
+
+| Dependency | What setup does |
 |---|---|
-| the three annotators, the editor, the embedding model | `ollama pull` (checked to load, not only to be listed) |
-| the Pharo 13 validation image (+ MuTalk, PharoBench-Support) and its global names | built or copied into `data/pharo-image/` |
-| the 12 benchmarks | downloaded at pinned revisions into `data/existing-benchmarks/` |
+| the four Ollama models | `ollama pull` when missing; checks that the files are complete (`/api/show`) |
+| the Pharo 13 validation image (+ MuTalk, PharoBench-Support), its VM and its global names | built or copied into `data/pharo-image/`; on that first build, the VM must evaluate `3 + 4` |
+| the 12 benchmarks | downloaded at pinned revisions into `data/existing-benchmarks/`, each one loaded |
 | the Pharo corpus | the parsed methods of the snapshot `pharo-llm/pharo-labels` into `data/pharo-corpus/` (1.3 GB) |
 
-### 1 · Repository selection — `results/01_repositories/`
-
-The corpus snapshot holds the **1,585 repositories** that passed mining filter 1 (real Pharo code, not
-coursework); they are listed in `repos.txt`. Most GitHub repositories are personal, inactive or copies
-(Kalliamvakou et al., MSR 2014), so each repository gets a **quality score** in [0, 1]: the weighted sum of eleven
-criterion scores, after the *reaper* framework for engineered projects (Munaiah et al., EMSE 2017):
-
-| criterion | measure | weight |
-|---|---|---|
-| community | contributors | 0.15 |
-| history | commits | 0.15 |
-| unit testing | share of test methods | 0.15 |
-| maintenance | development span × recency of the last push | 0.10 |
-| documentation | share of classes with a comment | 0.10 |
-| size | non-test methods | 0.10 |
-| originality | share of non-trivial methods not copied from an older repository (Lopes et al., OOPSLA 2017) | 0.05 |
-| licence | a licence is declared | 0.05 |
-| issues | the issue tracker is used | 0.05 |
-| loadability | a Metacello `BaselineOf` (Pharo-specific) | 0.05 |
-| popularity | stars + forks — low on purpose: stars measure popularity, not quality (Borges & Valente, JSS 2018) | 0.05 |
-
-Raw values become scores by saturating transforms, so no giant repository dominates. **Hard filters** come first:
-GitHub forks, mirrors (≥ 50 % of non-trivial methods copied from an older repository), repositories without
-methods. A repository is kept when its score is **≥ 0.50** (half of the maximum): ≈ **1,087** repositories. The
-score only selects; it is never used as an importance or a sampling weight.
-
-Outputs: `repos.txt`, `repository_scores.csv` (measures, criterion scores, score, decision, reason),
-`selected_repos.txt`, `scoring_scheme.md`. Figures: score distribution, threshold sensitivity (what other thresholds
-keep), criteria of selected vs excluded, score contributions, popularity vs score, decisions.
-
-### 2 · Literature ingestion — `results/02_literature/`
-
-Every task of the code benchmarks frontier models are evaluated on: HumanEval+, MBPP+, BigCodeBench Complete /
-Instruct, LiveCodeBench code generation / test-output prediction / code execution, SWE-bench Verified / Pro /
-Multilingual, Terminal-Bench 2.0, NL2Repo (DeepSWE when `HF_TOKEN` gives access). **6,433 tasks = 4,372 distinct
-problems** (a problem asked in several scenarios counts once). Each task keeps what the evaluated model receives,
-the reference answer, how it is checked, its language and its evaluation task type (code generation, completion,
-bug repair, test generation, other). Outputs: `literature_tasks.parquet`, `literature_benchmarks.csv`; figures.
-
-### 3 · Corpus and method filters — `results/03_corpus/`
-
-The ≈ **1.84 M methods** of the selected repositories, each with its provenance (repository, commit, file, line,
-GitHub link), its class context and its **abstract syntax tree**. Copies are detected across repositories (the
-canonical copy is the oldest). Then every method gets a decision, **decided on its AST and its class definition**
-(variables resolved like the compiler: arguments and temporaries, the class's instance / class variables,
-pseudo-variables, globals) — `pbr/method_filters.py`:
-
-| method (AST pattern) | decision |
-|---|---|
-| duplicate of an older method · in a mirror repository · cannot be parsed | exclude |
-| simple getter `^ v` · simple setter `v := arg` (v a variable of the class) | exclude |
-| returns a constant (`^ literal`, `^ true`, literal arrays) · empty · placeholder (`self subclassResponsibility`, `^ self`, …) | exclude |
-| generated boilerplate (manifests, Metacello baselines / configurations, `<generated>`, embedded data) | exclude |
-| trivial initialisation (`initialize` = `super initialize` + `v := literal / Class new`) | exclude |
-| simple message forwarding · non-trivial initialisation · very long (> 60 lines or > 40 statements) · requires dependencies (globals neither its project nor Pharo 13 defines) | review: kept, marked |
-| test methods | keep separately |
-
-Outputs: `repositories.parquet`, `methods.parquet`, `duplicates.parquet`, `method_filters.parquet` (decision and
-every reason per method), `method_filters_summary.csv`. Figures: method filters, duplication, method size, features.
-
-### 4 · Representative samples — `results/04_sampling/`
-
-**Pharo methods.** Stratified two-stage sampling: the strata are repository domains, stage 1 draws repositories,
-stage 2 at most 4 methods per repository, so no large repository dominates; every method carries its design weight.
-**Benchmarks.** Proportional to each benchmark's number of problems. For each source the sampler draws an **ordered
-pool**: the start sample, then the items of the saturation rounds.
-
-The start sample is a **99 % confidence, ±5 %** sample (Cochran 1977, with finite population correction, p = 0.5):
-**663 Pharo methods** of ≈ 690,000 eligible, **577 benchmark problems** of 4,372 (100 % confidence would be a
-census of every item). Targeted methods (rare areas: concurrency, FFI, reflection, network…) and test methods
-(kept separately) are added. The **representativeness check** compares the start sample with the population: for
-Pharo, the share of methods with each AST feature (loops, conditionals, iteration, exceptions, blocks, reflection,
-recursion…) and the method size, design-weighted, with 95 % intervals; for the benchmarks, the share of every
-benchmark and task type. Outputs: `sampling_design.json`, `pilot_sample.csv`, `literature_sample.csv`,
-`representativeness.csv`; figures `representativeness_pharo.png`, `representativeness_literature.png`, groups.
-
-### 5 · Discovery until saturation, three annotators, two sources — `results/05_discovery/`
-
-Three instruction-tuned models of three families — **qwen3.8:27b** (Alibaba), **gemma4:31b** (Google),
-**mistral-small3.2:24b** (Mistral AI) — each alone, never shown another model's answers (related models make the
-same mistakes: Kim et al., ICML 2025), read the items of one source and give, for each, up to three behaviours at
-three levels — **category › subcategory › behaviour** — in language-neutral terms, with a quote as evidence.
-
-**Saturation loop.** Each annotator starts with the 99 % sample, then goes on with rounds of 50 new items until
-**19 rounds in a row bring no new behaviour**: then a behaviour of 0.5 % prevalence would have appeared with 99 %
-probability (inductive thematic saturation; the rule of the earlier labelling study). A behaviour is new when a
-group of similar proposals (embedding cosine ≥ 0.85) reaches 2 items, so one odd wording never counts as new. Each
-annotator then consolidates its proposals into its own taxonomy, with definitions and inclusion / exclusion rules.
-
-This gives **six taxonomies**, in `<annotator>/<pharo|literature>/`: `taxonomy.png` (the tree; under each ●●○ / on
-the right of each category and subcategory, a bar and the number of items classified there), `taxonomy.json`,
-`taxonomy.csv` (one row per behaviour), `items.csv` (each item and its category / subcategory / behaviour),
-`categories.png`, `saturation.csv` / `saturation.png`, `proposals.jsonl`, `raw_responses.jsonl`; `figures/`
-compares them (`saturation_pharo.png`, `saturation_literature.png`, `concepts_per_model.png`).
-
-### 6 · The two final taxonomies — `results/06_taxonomy/pharo/` and `results/06_taxonomy/literature/`
-
-For each source, the three annotators' taxonomies become **one shared taxonomy**:
-
-1. **Similarity of the annotators' concepts** = 0.6 × cosine of their text embeddings (`nomic-embed-text`, "name:
-   definition") + 0.4 × the overlap of the items they classify (Jaccard, on the items both annotators saw; a
-   category or subcategory holds every item under it). The annotators classified the same items, so the same items
-   are evidence of the same meaning; candidate groups by average-linkage clustering on this similarity.
-2. **Judged merges**: an editor model reads each group — members with their number of items, largest first — and
-   keeps together only the concepts that mean the same thing, named after the best-supported members.
-3. **Hierarchy and harmonisation, weighted by items**: a behaviour goes under the subcategory where most of its
-   members' items were placed; categories are merged down to ≤ 16 and duplicates merged, every operation recorded.
-4. **Stable IDs** (`C001` / `S001` / `B001`), definitions, inclusion and exclusion rules, aliases, the models that
-   proposed each concept and the items behind it.
-5. **Expert review**: `review/taxonomy_review.xlsx` (accept / rename / redefine / merge / split / reject / add / move);
-   completed files in `review/returned/` produce the reviewed version on the next run. Until then the taxonomy is
-   *provisional* (◐).
-
-Outputs per source: **`taxonomy_v1.json`**, `figures/taxonomy_v1.png` (●●○ = the annotators whose concepts the
-merge joined into a behaviour; bar and number = items classified in each category, subcategory and behaviour), `taxonomy_aliases.csv`,
-`merge_candidates.csv`, `annotation_guidelines_v1.md`, `review/`.
-
-### Stage 2 (phases 7–13): not yet adapted to the two taxonomies
-
-The code of the next stage is in the repository — annotation of NEW samples with the final taxonomies (their
-validation), agreement and blinded expert validation, corpus-wide profile, literature × Pharo coverage, benchmark
-construction, execution in an isolated Pharo image, model evaluation — but it still expects one shared taxonomy.
-`./run.sh` stops after phase 6; asking for a later phase says so.
-
-**How a benchmark task is validated (phases 11–12)** — an automatic, five-level validation whose claims stay within
-what each check can establish:
-
-| Level | Check | What it establishes |
-|---|---|---|
-| 1 Executability | installs in a clean Pharo 13 image, hermetic, reference passes its tests 3× (once reversed), fail-to-pass | the task runs |
-| 2 Independent oracle | a **behaviour contract** per behaviour, written before any task from the taxonomy only (phase 11); oracle models of other families than the author, seeing only the solver's view + the contract, write their own tests; a test failing on the reference is a *counterexample* | the reference agrees with tests it never shaped |
-| 3 Valid mutants | every MuTalk mutant re-run in a clean image on both test suites: killed, survived (test gap), possibly equivalent, unstable, terminated, invalid; score bounds; the bug-repair mutant compiles, is killed reproducibly and violates the contract | the tests detect injected faults |
-| 4 Behaviour alignment | each contract property covered / violated / untested by the independent tests | the task tests the intended behaviour |
-| 5 Audit | experts review every quarantined task + a stratified random sample of the auto-verified ones | the residual error of levels 1–4 (Wilson 95 %) |
-
-A task failing level 2 or 4 is *quarantined*, never evaluated unless an expert accepts it. Every task gets a report
-(`12_verification/validation_reports/<task_id>.json`), every mutant a record (`mutants.jsonl`: original and mutated
-code, operator, distinguishing tests, failing assertions). The tasks are new (from Pharo seeds), validated against
-their own contracts: no equivalence to a literature task is claimed. Settings: `config.yaml` → `benchmark`
-(`contract_author`, `oracles`, `min_oracle_tests`, `min_property_coverage`, `max_mutants_rechecked`), profile
-`benchmark_audit`.
+Setup checks that the dependencies are present. It does not check that they work: no model is asked a question,
+and an existing image is not run again. A broken model or image shows up only in the phase that uses it.
 
 ## Results
 
 ```
 results/
-  SUMMARY.md                       every phase: status, key numbers, figures
-  logs/                            pipeline.log, NN_<phase>.log, events.jsonl, llm_calls.jsonl, 00_setup.log
-  01_repositories/  02_literature/  03_corpus/  04_sampling/
-  05_discovery/<annotator>/<pharo|literature>/       the six taxonomies
-  06_taxonomy/<pharo|literature>/                    the two final taxonomies
-data/                              downloads, Pharo image, conversion tools, LLM cache (git-ignored)
+  SUMMARY.md                                  every phase: status, key numbers, figures
+  logs/                                       pipeline.log, NN_<phase>.log, events.jsonl, llm_calls.jsonl, 00_setup.log
+  01_repositories/                            repository_scores.csv, selected_repos.txt
+  02_literature/                              literature_tasks.parquet
+  03_corpus/                                  methods.parquet, method_filters.parquet
+  04_sampling/                                the samples, representativeness
+  05_discovery/<annotator>/<pharo|literature>/  the six taxonomies
+  06_taxonomy/<pharo|literature>/             the two final taxonomies
+  07_annotation/ … 13_evaluation/             stage 2 (see docs/PIPELINE.md)
+data/                                         downloads, Pharo image, LLM cache (git-ignored)
 ```
 
-A phase is redone only when what it reads changed (its settings, the run of an upstream phase, or an expert file it
-imports); `./run.sh status` marks it *stale*. Raw LLM answers (every attempt) are kept in `data/llm-cache/`.
+Every phase folder has a `README.md` explaining its files, and a `figures/` folder. A phase is redone only when
+something it reads has changed: its settings, the run of an upstream phase, or an expert file it imports.
+`./run.sh status` marks such a phase *stale*. Raw LLM answers, every attempt included, are kept in
+`data/llm-cache/`. Expert files: `06_taxonomy/<source>/review/`, `08_validation/expert/` and
+`12_verification/expert/`; completed files go in their `returned/` folder.
 
 ## Settings (`config.yaml`)
 
 | Section | What |
 |---|---|
+| `profiles` | sample sizes: `pilot` (default), `full`, `smoke` (tiny, own results folder) |
 | `repositories` | hard filters, criterion weights and saturation caps, threshold |
-| `method_filters` | long-method limits, whether review methods are sampled |
+| `literature` | the evaluation task type of each benchmark |
+| `corpus`, `method_filters` | corpus snapshot; long-method limits, whether review methods are sampled |
 | `sampling` | strata, methods per repository, targeted signals |
+| `llm` | annotators, editor, embedding model, decoding, retries, prices |
 | `discovery` | confidence (0.99), margin (±5 %), round size, min_share → patience, novelty threshold, min_support |
-| `llm` | the annotators, the editor, the embedding model, decoding |
-| `taxonomy` | candidate thresholds, maximum categories, review required or not |
-| `profiles` | `pilot` (default), `full`, `smoke` (tiny, own results folder) |
+| `taxonomy` | candidate thresholds, similarity weights, maximum categories, review required or not |
+| `annotation`, `validation`, `profile`, `coverage` | stage 2: behaviours per item, expert strata, profile models, support |
+| `benchmark` | task author, contract model, oracles, validation thresholds, task types |
+| `pharo` | image, time and resource limits, sandbox, repeats, minimum mutation score and tests |
+| `evaluation` | evaluated models, samples per task, max tokens |
 
 ## Code
 
@@ -217,14 +132,15 @@ imports); `./run.sh status` marks it *stale*. Raw LLM answers (every attempt) ar
 |---|---|
 | `run.sh`, `pbr/cli.py`, `pbr/common.py` | orchestration, resume, fingerprints, logs, status |
 | `pbr/setup.py` | dependencies |
-| `pbr/phases/<name>.py` | one module per phase (repositories, literature, corpus, sampling, discovery, taxonomy, …) |
+| `pbr/phases/<name>.py` | one module per phase |
 | `pbr/method_filters.py` | the AST rules of phase 3 |
 | `pbr/benchmarks.py` | the benchmarks: pinned sources, download, item cards |
 | `pbr/llm.py` | LLM engine: structured output and validation, retries, cache of raw answers, cost ledger |
 | `pbr/taxonomy.py` | taxonomy manager: stable IDs, validation, versions, revisions |
-| `pbr/agreement.py` | statistics: sample size, saturation, agreement, weighted estimates |
+| `pbr/agreement.py` | statistics: sample size, saturation, agreement, weighted estimates, Wilson, PPI |
 | `pbr/pharo.py`, `pharo/harness.st` | isolated Pharo runner and harness (install, tests, stubs, candidates, MuTalk) |
-| `pbr/oracle.py` | independent validation: behaviour contracts, independent tests, alignment, mutant validity, audit sample |
+| `pbr/oracle.py` | independent validation of tasks: contracts, independent tests, alignment, mutant validity, audit sample |
+| `pbr/workbook.py` | expert workbooks (Excel): writing and importing with reviewer provenance |
 | `pbr/figures.py`, `pbr/diagram.py` | figure style, taxonomy trees, the pipeline figure |
 | `tests/` | `.venv/bin/python -m unittest discover -s tests` |
 
@@ -234,4 +150,7 @@ Kalliamvakou et al., *The promises and perils of mining GitHub*, MSR 2014 · Mun
 engineered software projects*, EMSE 2017 · Lopes et al., *DéjàVu: a map of code duplicates on GitHub*, OOPSLA 2017 ·
 Borges & Valente, *What's in a GitHub star?*, JSS 2018 · Cochran, *Sampling Techniques*, 1977 · Wan et al.,
 *TnT-LLM*, KDD 2024 (generate, then consolidate) · Kim et al., ICML 2025 (correlated errors of related models) ·
-Krippendorff, *Content Analysis*, 2004.
+Krippendorff, *Content Analysis*, 2004 · Angelopoulos et al., *Prediction-powered inference*, Science 2023 ·
+Barr et al., *The oracle problem in software testing: a survey*, TSE 2015 · Jia & Harman, *An analysis and survey
+of the development of mutation testing*, TSE 2011 · Liu et al., *Is your code generated by ChatGPT really correct?*
+(EvalPlus), NeurIPS 2023.

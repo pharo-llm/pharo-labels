@@ -1,13 +1,57 @@
-# How the pipeline works
+# The pipeline
 
-From the Pharo repositories mined on GitHub to **two final taxonomies of programming behaviours**: one that
-describes what real Pharo methods do, one that describes what the tasks of the existing code benchmarks ask for.
+**The question.** Which programming behaviours does real Pharo code exhibit, which of them do the code benchmarks
+LLMs are evaluated on actually test, and how well do LLMs handle the behaviours that matter in Pharo?
+
+**The answer, in 13 phases.** Stage 1 builds **two taxonomies of programming behaviours**: one from real Pharo
+methods, one from the tasks of the existing benchmarks. Stage 2 validates them, compares them, and turns the
+behaviours that Pharo needs into a **validated, executable Pharo benchmark** on which models are evaluated.
 This document follows the data through every phase: what goes in, what happens and why, what comes out.
 
 ![The pipeline](pipeline.png)
 
-*Blue: the Pharo side. Orange: the existing benchmarks. The two sides are processed the same way and meet only at
-the end, as two comparable taxonomies.*
+*Stage 1. Blue: the Pharo side. Orange: the existing benchmarks. The two sides are processed the same way and meet
+only at the end, as two comparable taxonomies.*
+
+## The whole pipeline at a glance
+
+```
+ STAGE 1 — two taxonomies (./run.sh)                    STAGE 2 — validate, compare, build, evaluate
+ ───────────────────────────────────────                ───────────────────────────────────────────────
+  1 repositories   1,585 → ≈ 1,087 selected               7 annotation     new samples, 3 annotators, alone
+  2 literature     12 benchmarks → 4,372 problems         8 validation     agreement (α) + blinded experts
+  3 corpus         ≈ 1.84 M methods, AST filters          9 profile        how often each behaviour occurs
+  4 sampling       99 % ±5 % samples + pools             10 coverage       Pharo × benchmarks, per behaviour
+  5 discovery      3 models × 2 sources, saturation      11 benchmark      contracts → new Pharo tasks
+  6 taxonomy       merged → 2 final taxonomies           12 verification   5-level validation of each task
+                                                         13 evaluation     models × task variants
+```
+
+| # | Phase | What goes in | What comes out | Humans |
+|---|---|---|---|---|
+| 0 | Setup | `config.yaml` | models, Pharo image, benchmarks, corpus in `data/` | |
+| 1 | Repository selection | 1,585 mined repositories | ≈ 1,087 engineered projects (weighted quality score ≥ 0.50) | |
+| 2 | Literature ingestion | 12 benchmarks at pinned revisions | 6,433 tasks = 4,372 distinct problems, with their task type | |
+| 3 | Corpus and method filters | ≈ 1.84 M methods | a decision per method, taken on its syntax tree | |
+| 4 | Representative samples | eligible methods, problems | 99 % ±5 % start samples (663 + 577) and ordered pools | |
+| 5 | Discovery | the samples | 6 taxonomies (3 annotators × 2 sources), each until saturation | |
+| 6 | Final taxonomies | the 6 taxonomies | 2 final taxonomies with stable IDs (C / S / B) | review |
+| 7 | Annotation | NEW samples + a taxonomy | 3 independent classifications of every item | |
+| 8 | Validation | the classifications | agreement (α, κ, AC1); expert labels; `taxonomy_v2` | experts |
+| 9 | Profile | a large random sample | design-weighted frequency of every behaviour in Pharo | |
+| 10 | Coverage | phases 7–9 | per behaviour: both · Pharo only · literature only · investigate | |
+| 11 | Benchmark construction | selected behaviours, Pharo seeds | behaviour contracts; tasks that execute in the image | selection |
+| 12 | Benchmark validation | the tasks | verified / quarantined / rejected tasks, 3 variants each | audit |
+| 13 | Evaluation | verified tasks, the models | pass rates per model × category × task type | |
+
+**Models** (all local, Ollama): the three annotators `qwen3.8:27b` (Alibaba), `gemma4:31b` (Google) and
+`mistral-small3.2:24b` (Mistral AI), plus `nomic-embed-text` for similarity. qwen also edits the taxonomy (phase 6)
+and writes the tasks (phase 11). gemma writes the behaviour contracts. gemma and mistral write the independent tests
+(phase 12), so none of these checks comes from the family that wrote the tasks. Phase 13 evaluates the three.
+
+**Status.** Stage 1 runs with `./run.sh`. The stage 2 code is in the repository (phases 11–12 were tested end to
+end on hand-written tasks in the real image), but it still expects one shared taxonomy instead of the two of phase
+6, so `./run.sh` stops after phase 6.
 
 ---
 
@@ -33,12 +77,17 @@ something cannot be obtained. When everything is present it takes a few seconds.
 
 | What | How |
 |---|---|
-| The three annotator models, the editor model, the embedding model | pulled with Ollama, then checked to really load |
-| The Pharo 13 image (with MuTalk and PharoBench-Support) and the list of its global names | built or copied into `data/pharo-image/` |
+| The four models (the three annotators, which are also the editor, author, contract, oracle and evaluated models; the embedding model) | pulled with Ollama when missing; the files are checked to be complete |
+| The Pharo 13 image (with MuTalk and PharoBench-Support) and the list of its global names | built or copied into `data/pharo-image/`; the VM must evaluate `3 + 4` the first time |
 | The 12 benchmarks | downloaded at pinned revisions into `data/existing-benchmarks/` |
 | The Pharo corpus (the parsed methods of every repository) | downloaded once from Hugging Face into `data/pharo-corpus/` |
 
+Setup checks that every dependency is **present**, not that it **works**: no model is asked a question, and an
+existing image is not run again. A broken model or image shows up in the first phase that uses it.
+
 ---
+
+# Stage 1 — two taxonomies (phases 1–6)
 
 ## Phase 1 — Repository selection
 
@@ -251,16 +300,154 @@ category and subcategory counts here are sums; a new run counts distinct items.)
 
 ---
 
-## What comes next (stage 2)
+# Stage 2 — validate, compare, build, evaluate (phases 7–13)
 
-With the two final taxonomies, the next stage compares them and builds the benchmark: classify NEW samples with
-each taxonomy (its validation), measure agreement between annotators and with experts, estimate how often each
-behaviour occurs in Pharo, map the two taxonomies onto each other (what Pharo does that benchmarks do not test, and
-the reverse), then write, verify and evaluate executable Pharo tasks. A task is verified in five levels (README,
-"How a benchmark task is validated"): it executes; it agrees with independent tests that models of other families
-wrote from a behaviour contract without seeing the reference; its tests kill valid mutants; it satisfies every
-property of its contract; and an expert audit of a random sample measures what the automatic checks miss. That code (phases 7–13) exists but still
-expects a single shared taxonomy; `./run.sh` stops after phase 6.
+*The code of these phases exists but still expects one shared taxonomy; `./run.sh` stops after phase 6.*
+
+Phase 4 draws **disjoint** splits of the Pharo methods with the same design. *discovery* builds the taxonomy
+(phase 5), *annotation* validates it (phases 7–8), and *profile* measures frequencies (phase 9). The benchmark tasks
+get the first two splits. No item is used both to build the taxonomy and to judge it.
+
+## Phase 7 — Independent annotation
+
+**Goal.** Know whether the taxonomy can be applied consistently to items it was not built from.
+
+**What happens.** Each of the three annotators, alone, classifies every item of the annotation split with the
+taxonomy. It gives 1 to 3 behaviour IDs (its answer is constrained to the taxonomy's IDs, plus UNKNOWN and
+INSUFFICIENT), each with evidence quoted from the item and a confidence, plus an explanation and an uncertainty
+level. Every model gets the same prompt, one item at a time.
+
+**Output.** `annotations_raw.jsonl` (every answer, valid or not), `annotations_validated.parquet` (one row per item
+and model: IDs, evidence and whether it occurs in the item, model digest, taxonomy version, tokens).
+
+## Phase 8 — Agreement and expert validation
+
+**Goal.** Measure how reliable the classifications are, against each other and against people.
+
+**What happens.**
+
+1. **AI agreement**: full, partial or no agreement per item. Krippendorff's α (MASI distance on behaviour sets,
+   nominal on the primary behaviour and category), Fleiss' κ, Gwet's AC1, pairwise Cohen's κ, and α per behaviour.
+2. **A blinded expert workbook** (`expert/expert_workbook.xlsx`): items stratified by AI agreement, with more items
+   where the models disagree. The AI answers are **not** shown.
+3. **Import** of the completed workbooks: the experts' agreement among themselves (the human baseline), then
+   humans against the AI (precision, recall, F1, accuracy, per agreement level). AI majority is never taken as
+   correctness.
+4. **Adjudication** of the disagreements, now with the AI answers revealed. The experts' taxonomy decisions produce
+   `taxonomy_v2.json`, with the map v1 → v2.
+
+Without returned workbooks, the phase computes AI agreement only and is *provisional*.
+
+## Phase 9 — How often each behaviour occurs in Pharo
+
+**Goal.** Estimate the frequency of every behaviour in real Pharo code, with honest intervals.
+
+**What happens.** The profile split (a large random sample) is classified with the latest taxonomy by the annotator
+closest to the experts (or, without experts, the one agreeing most with the other two). For each behaviour,
+subcategory and category it reports:
+
+- the **design-weighted share**, with a 95 % interval (repositories are the sampling clusters);
+- the share of repositories where the behaviour appears;
+- differences between repository domains;
+- rare and important behaviours.
+
+When expert labels exist, the shares are corrected for the model's errors (prediction-powered inference,
+Angelopoulos et al. 2023).
+
+**Output.** `pharo_behavior_profiles.parquet`, `weighted_frequency.csv`, `repository_prevalence.csv`,
+`group_differences.csv`, `unknowns.csv`.
+
+## Phase 10 — Pharo versus the benchmarks
+
+**Goal.** For each behaviour, say whether the existing benchmarks test what Pharo code does.
+
+**What happens.** The two classified datasets are joined on the behaviour IDs. Each behaviour gets a status:
+**both** (enough support on each side), **Pharo only** (observed in Pharo, not identified in the benchmark sample),
+**literature only**, or **investigate** (too little support, or the annotators do not agree on it, α < 0.667).
+Not observing a behaviour is never read as its absence: every gap carries its sample size and the upper bound of
+its share that the sample still allows (rule of three).
+
+**Output.** `coverage_matrix.csv`, `behavior_gaps.csv`, `coverage_by_benchmark.csv`, each row with example items.
+
+## Phase 11 — Benchmark construction
+
+**Goal.** New, self-contained Pharo tasks for the behaviours the benchmarks miss or that Pharo needs most.
+
+**What happens.**
+
+1. **Behaviours**: chosen from the coverage matrix (Pharo only first, then both; the most frequent in Pharo first),
+   or listed by the research team in `selected_behaviors.csv`.
+2. **Behaviour contracts, before any task.** For each behaviour, gemma writes from the taxonomy definition alone
+   what any implementation must do: its input and output, 3–6 observable properties (P1…), the edge cases, and what
+   is excluded. Example, for "select the elements satisfying a predicate": every returned element satisfies the
+   predicate; every element that satisfies it is returned, duplicates included; the order is kept; an empty input
+   gives an empty output.
+3. **Seeds**: real Pharo methods labelled with the behaviour, one per repository (and, when one exists, a
+   literature task with the same behaviour, for inspiration only).
+4. **Authoring**: qwen writes a NEW task that satisfies the contract: one class, the methods to implement (the
+   reference solution), the given methods, SUnit tests, and the statement, written last from the code.
+5. **Execute and repair**: the task is installed and run in a clean image. When it fails, the author is shown the
+   image's error report and rewrites it (up to 2 rounds).
+
+**Output.** `contracts.jsonl`, `contracts/<contract_id>.md`, `benchmark_candidates.jsonl`, `tasks/<task_id>/`.
+
+## Phase 12 — Benchmark validation, in five levels
+
+**Goal.** Accept a task only on evidence that it is correct, that its tests catch faults, and that it tests the
+intended behaviour, and measure how often this automatic validation is still wrong.
+
+The author wrote the reference **and** its tests, so both can share the same misunderstanding: all tests pass, and
+the task is still wrong. Each level answers a different question:
+
+| Level | Question | Check | A task that fails it |
+|---|---|---|---|
+| 1 Executability | does it run? | installs in a clean Pharo 13 image; touches nothing outside it; ≥ 3 tests; reference passes 3× (once in reverse order); each target method stubbed out makes a test fail; MuTalk mutation score ≥ 0.6 | rejected |
+| 2 Independent oracle | is the reference correct? | gemma and mistral, seeing only what a solver sees plus the contract, write their own tests. Each is run on the reference: agrees, **counterexample**, flaky, vacuous (passes even with the method stubbed) or invalid. A task needs ≥ 3 agreeing tests and no counterexample | quarantined |
+| 3 Valid mutants | do the tests catch faults? | every MuTalk mutant is re-run in a clean image on both test suites: killed, survived but detectable (a test gap), possibly equivalent, unstable, terminated or invalid. The mutation score is given as a lower and an upper bound, because equivalence is never assumed | (reported) |
+| 4 Behaviour alignment | does it test the intended behaviour? | each contract property is covered, violated or untested by the agreeing independent tests | quarantined |
+| 5 Audit | how often are levels 1–4 wrong? | experts review every quarantined task plus a random sample of the verified ones, stratified by category; the share they reject, with a Wilson 95 % interval, is the residual error | expert decision |
+
+A quarantined task means the reference or the independent test is wrong, and only a person can tell which. It is
+never evaluated unless an expert accepts it.
+
+**Example, from a test run in the real image.** A reference that wrongly rejects the last valid index passed every
+level-1 check, with a mutation score of 0.97, because the author's tests never asked for the last element. An
+independent test did: `Got nil instead of 3`. The task was quarantined, with that counterexample shown to the
+experts.
+
+**Variants.** Every task gives three variants that share its hidden tests: *code generation* (statement + class +
+method signatures), *code completion* (the first lines of the reference are given) and *bug repair* (a mutant that
+compiles, is killed reproducibly by a failing assertion or an error, and violates the contract; the one the fewest
+tests catch, such as an off-by-one). They are three variants of one problem, not three problems.
+
+**Literature equivalence.** The tasks are new, built from Pharo seeds, and validated against their own contracts.
+None is claimed to be equivalent to a task of an existing benchmark.
+
+**Output.** `benchmark_verified/tasks.jsonl` (what a solver sees) and `tasks_private.jsonl` (reference, tests,
+provenance). `validation_reports/<task_id>.json` + `validation_reports.csv` hold one report per task (contract,
+independent tests, counterexamples, properties, mutation bounds, status). `mutants.jsonl` holds one record per
+mutant (original and mutated code, operator, distinguishing tests, failing assertions). Also
+`independent_tests.jsonl`, `quarantine.csv`, `validation_report.md` (by level) and `expert/benchmark_review.xlsx`.
+
+## Phase 13 — Model evaluation
+
+**Goal.** How well do LLMs handle the Pharo behaviours?
+
+**What happens.** Each evaluated model (qwen3.8, gemma4, mistral) gets the same prompt for every verified task
+variant, at temperature 0 with a fixed seed. Its answer is parsed into methods and run as untrusted code in the
+isolated image: resource limits, no network. The reference solutions are submitted as a model too and must score
+100 %, which checks the whole evaluation path.
+
+**Output.** Pass or fail and tests passed for every (task variant, model) pair, with the error kind (no code,
+syntax, compile, test failure, timeout). Pass rates per model × category × behaviour × task type, with 95 %
+intervals. `reproducibility.json` (config hash, git commit, package versions, image and harness hashes, model
+digests) and `release/`, the publishable benchmark.
+
+*Caveat: the three evaluated models also built the benchmark (qwen wrote the tasks; gemma and mistral wrote the
+contracts and the independent tests). Report this with the results, or add models that played no part in building
+it.*
+
+---
 
 ## Where everything is
 
@@ -274,6 +461,13 @@ results/
   04_sampling/                                     the samples and their representativeness
   05_discovery/<annotator>/<pharo|literature>/     the six annotators' taxonomies
   06_taxonomy/<pharo|literature>/                  the two final taxonomies
-data/                                              downloads, Pharo image, model cache (not in git)
+  07_annotation/                                   the three independent classifications
+  08_validation/                                   agreement, expert workbook and its returned/ files, taxonomy_v2
+  09_profile/                                      frequency of every behaviour in Pharo
+  10_coverage/                                     the coverage matrix and the gaps
+  11_benchmark/                                    contracts, task candidates
+  12_verification/                                 verified tasks, validation reports, mutants, audit workbook
+  13_evaluation/                                   results per model, release/
+data/                                              downloads, Pharo image, LLM cache (not in git)
 config.yaml                                        every setting
 ```
