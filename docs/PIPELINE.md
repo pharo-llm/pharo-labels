@@ -37,7 +37,6 @@ something cannot be obtained. When everything is present it takes a few seconds.
 | The Pharo 13 image (with MuTalk and PharoBench-Support) and the list of its global names | built or copied into `data/pharo-image/` |
 | The 12 benchmarks | downloaded at pinned revisions into `data/existing-benchmarks/` |
 | The Pharo corpus (the parsed methods of every repository) | downloaded once from Hugging Face into `data/pharo-corpus/` |
-| The Pharo PT model (used later, for evaluation) | its adapter merged into its base model and registered in Ollama |
 
 ---
 

@@ -38,7 +38,6 @@ a complete setup takes seconds):
 | Dependency | How |
 |---|---|
 | the three annotators, the editor, the embedding model | `ollama pull` (checked to load, not only to be listed) |
-| the Pharo PT model `pharo-llm/Qwen2.5-Coder-PT:7b` (evaluation, stage 2) | its LoRA adapter (Hugging Face `pharo-llm/Qwen2.5-Coder-7B-PT`, branch `checkpoint-15400`) merged into its base, converted to GGUF (llama.cpp), registered in Ollama |
 | the Pharo 13 validation image (+ MuTalk, PharoBench-Support) and its global names | built or copied into `data/pharo-image/` |
 | the 12 benchmarks | downloaded at pinned revisions into `data/existing-benchmarks/` |
 | the Pharo corpus | the parsed methods of the snapshot `pharo-llm/pharo-labels` into `data/pharo-corpus/` (1.3 GB) |

@@ -61,7 +61,7 @@ if needs_setup "${1:-}"; then
     nohup ollama serve > data/ollama.log 2>&1 &
     for _ in $(seq 30); do curl -sf "http://${host#http://}/api/tags" >/dev/null && break; sleep 1; done
   fi
-  # models (library + the Pharo PT model built from its Hugging Face adapter), Pharo image, benchmarks, corpus
+  # models (Ollama library), Pharo image, benchmarks, corpus
   if [ "${SKIP_SETUP:-0}" != 1 ]; then
     .venv/bin/python -m pbr setup || { echo "Setup failed: nothing was run (log: results/logs/00_setup.log)."; exit 1; }
   fi

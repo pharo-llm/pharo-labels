@@ -106,25 +106,6 @@ literature:
   # SWE-bench Verified ⊂ SWE-bench; BigCodeBench-Instruct = Complete reworded; LCB test-output / execution reuse
   # LCB problems: kept in the tables, but the behaviour of a problem is counted once (dedup key).
 
-# ------------------------------------------------------------------ setup (./run.sh does it before any phase)
-setup:
-  # Models that are not in the Ollama library: a LoRA adapter on Hugging Face, converted to GGUF with llama.cpp
-  # and registered in Ollama on top of its base model (Modelfile ADAPTER). Built once; skipped when present.
-  custom_models:
-    - ollama_name: "pharo-llm/Qwen2.5-Coder-PT:7b"
-      hf_repo: pharo-llm/Qwen2.5-Coder-7B-PT
-      revision: checkpoint-15400        # the final checkpoint (epoch 5 of 5); "main" holds only the README
-      base_hf: unsloth/Qwen2.5-Coder-7B # the base the adapter was trained on (its adapter_config.json)
-      # Ollama (>= 0.40) no longer applies LoRA adapters: the adapter is merged into the base weights (peft, fp16),
-      # the merged model converted to GGUF, and that GGUF registered in Ollama
-      outtype: q8_0                     # GGUF precision (8-bit: close to the training precision)
-      base_local_dirs:                  # local copies of base_hf, used only if every weight file's sha256 matches the Hub
-        - ~/.cache/hf_adapter_to_ollama/base_model
-  llama_cpp:
-    repo: https://github.com/ggml-org/llama.cpp
-    ref: b6100                          # pinned release: only its Python converter (convert_hf_to_gguf.py) is used
-  tools_dir: data/tools                 # llama.cpp checkout, conversion venv, converted adapters
-
 # ------------------------------------------------------------------ phase 3: Pharo corpus
 corpus:
   snapshot_repo: pharo-llm/pharo-labels    # Hugging Face dataset written by ../labeling-pharo-repos (parsed methods)
@@ -284,9 +265,6 @@ evaluation:
     - {name: reference, provider: reference}               # the reference solutions: must score 100%
     - {name: qwen3.8-27b, provider: ollama, model: "qwen3.8:27b"}
     - {name: gemma4-31b, provider: ollama, model: "gemma4:31b"}
-    # the Pharo PT model is a pre-trained (base) model, not a chat model: asked in plain completion mode
-    - {name: pharo-pt-7b, provider: ollama, model: "pharo-llm/Qwen2.5-Coder-PT:7b", mode: completion}
-    # control: the PT model's own base, asked the same way (PT − base = what Pharo pre-training adds)
-    - {name: qwen2.5-coder-7b-base, provider: ollama, model: "qwen2.5-coder:7b-base-q8_0", mode: completion}
+    - {name: mistral-small3.2-24b, provider: ollama, model: "mistral-small3.2:24b"}
   samples_per_task: 1                      # pass@1, greedy
   max_tokens: 1500
