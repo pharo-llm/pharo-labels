@@ -209,6 +209,24 @@ def wilson(k: int, n: int, conf: float = 0.95) -> tuple[float, float]:
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
+def cochran(population: int, conf: float = 0.95, margin: float = 0.05, p: float = 0.5) -> int:
+    """Sample size to estimate a proportion with ±margin at the given confidence (Cochran 1977, 4.2), with the
+    finite population correction: n0 = z² p (1-p) / e²;  n = n0 / (1 + (n0 - 1) / N)."""
+    if conf >= 1:                       # 100% confidence = a census of the population
+        return int(population)
+    z = z_value(conf)
+    n0 = z * z * p * (1 - p) / (margin * margin)
+    n = n0 / (1 + (n0 - 1) / population) if population else n0
+    return int(math.ceil(n))
+
+
+def saturation_patience(min_share: float, round_size: int, conf: float = 0.95) -> int:
+    """Rounds without a new concept after which a concept of prevalence ``min_share`` would have appeared with
+    probability ``conf``: the smallest k with (1 - min_share)^(k * round_size) <= 1 - conf."""
+    items = math.log(1 - conf) / math.log(1 - min_share)
+    return max(1, int(math.ceil(items / round_size)))
+
+
 def rule_of_three(n: int, conf: float = 0.95) -> float:
     """Upper confidence bound of a proportion when 0 of n items show it: 1 - (1-conf)^(1/n) (≈ 3/n)."""
     return 1.0 if n == 0 else 1 - (1 - conf) ** (1 / n)

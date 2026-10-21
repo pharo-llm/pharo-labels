@@ -6,16 +6,15 @@
 
 project:
   results_dir: results                     # one sub-folder per phase: results/01_repositories ... results/13_evaluation
-  cache_dir: results/cache                 # LLM answers, shared by every profile (never asked twice)
+  cache_dir: data/llm-cache                # LLM answers, shared by every profile (never asked twice; git-ignored)
   data_dir: data                           # downloads and built tools (git-ignored; ./run.sh setup fills it)
   seed: 42
 
 # ------------------------------------------------------------------ sample sizes (per profile)
 profiles:
   pilot:                                   # the first deliverable (§8): small, runs on a laptop in a few hours
-    literature_discovery_per_benchmark: 3  # literature tasks shown to each model in phase 5, per benchmark
-    pharo_discovery: 48                    # Pharo methods shown to each model in phase 5 (random design)
-    pharo_discovery_targeted: 12           # + targeted methods (rare behaviours), phase 5
+    # discovery (phase 5): 95% sample + saturation loop (section discovery); + these fixed extras in the first round
+    pharo_discovery_targeted: 12           # targeted methods (rare behaviours), phase 5
     literature_annotation_per_benchmark: 4 # phase 7
     pharo_annotation: 60                   # phase 7, random design (frequency estimation)
     pharo_annotation_targeted: 12          # phase 7, targeted (discovery of rare behaviours, never weighted)
@@ -27,8 +26,10 @@ profiles:
     benchmark_candidates: 20               # phase 11
   smoke:                                   # a few items only, to check that every phase works (PROFILE=smoke ./run.sh)
     results_dir: results-smoke             # its own results folder (never mixed with a real run)
-    literature_discovery_per_benchmark: 1
-    pharo_discovery: 8
+    discovery_initial: 8                   # overrides the 95% start sample (smoke only)
+    discovery_round: 4
+    discovery_patience: 1
+    discovery_max_rounds: 2
     pharo_discovery_targeted: 2
     pharo_discovery_tests: 2
     literature_annotation_per_benchmark: 1
@@ -40,8 +41,6 @@ profiles:
     pharo_profile_tests: 0
     benchmark_candidates: 2
   full:
-    literature_discovery_per_benchmark: 10
-    pharo_discovery: 300
     pharo_discovery_targeted: 60
     literature_annotation_per_benchmark: 30
     pharo_annotation: 384                  # Cochran n for ±5% at 95%
@@ -132,7 +131,8 @@ corpus:
   trivial_max_statements: 1                # accessors / one-statement methods are flagged `is_trivial`
 
 method_filters:                            # phase 3: decision for every method (rules and reasons: pbr/method_filters.py)
-  long_method_lines: 60                    # longer methods are kept but marked "review" (they need more context)
+  long_method_lines: 60                    # longer methods are kept but marked "review" (they need more context) ...
+  long_method_statements: 40               # ... or with more statements (all levels of the AST)
   include_review: true                     # review methods (forwarding, non-trivial initialisation, long, external
                                            # dependencies) are sampled, marked with their reasons; false = left out
 
@@ -181,6 +181,22 @@ llm:
 
 # ------------------------------------------------------------------ phase 5: discovery
 discovery:
+  # Start: a sample of 99% confidence, ±5% margin (Cochran 1977, with finite population correction, p = 0.5), per source:
+  # ~663 Pharo methods of ~690,000; ~580 benchmark problems of 4,372. Then the SATURATION LOOP: rounds of new items
+  # (same design), until every annotator has `patience` rounds in a row without a new behaviour.
+  confidence: 0.99                         # (100% would be a census of every item: months of computing)
+  margin: 0.05
+  proportion: 0.5                          # 0.5 = the most conservative
+  initial_size: null                       # null = computed from the three values above (per source)
+  round_size: 50                           # items added per saturation round
+  min_share: 0.005                         # a behaviour of this prevalence would have appeared with 95% probability
+  patience: null                           # rounds in a row without a new behaviour; null = derived from min_share
+                                           # (12 rounds of 50 for 0.5%), as in the earlier labelling study
+  max_rounds: 30                           # safety cap
+  novelty_threshold: 0.85                  # proposals of an annotator are grouped by embedding similarity (cosine);
+  min_support: 2                           # a group becomes a behaviour once it has this many items: a NEW behaviour
+                                           # is a group reaching it (one odd wording alone never counts as new)
+  methods_per_repo: 4                      # the discovery pool is larger: up to 4 methods per repository
   batch_size: 6                            # items per prompt (each model sees the same batches)
   max_behaviors_per_item: 3
 
@@ -189,11 +205,15 @@ taxonomy:
   # Embeddings only PROPOSE: concepts whose "name: definition" embeddings are this similar (cosine, average
   # linkage) form a candidate group; the editor model then decides which members mean the same thing
   # (embeddings alone rate "iterate" and "filter" closer than two wordings of "filter").
-  candidate_threshold:
-    category: 0.74
-    subcategory: 0.76
-    behavior: 0.78
+  candidate_threshold:                     # on the COMBINED similarity (below): ≈ cosine 0.78 with no shared item,
+    category: 0.44                         # or cosine 0.5 with half of the items shared
+    subcategory: 0.46
+    behavior: 0.47
   max_group_size: 9                        # larger candidate groups are re-split with a stricter threshold
+  # similarity of two concepts of the three annotators = embedding (cosine of "name: definition") combined with the
+  # overlap of the items they classify (Jaccard; for a category or subcategory, every item under it): the annotators
+  # classified the same items, so the same items = evidence of the same meaning. Members are weighted by their items.
+  similarity_weights: {embedding: 0.6, items: 0.4}
   max_categories: 16                       # harmonisation: the editor merges categories down to this number
   min_models_for_behavior: 1               # a behaviour proposed by fewer models is kept but marked
   require_review: false                    # true = phase 6 stops until results/06_taxonomy/review/returned/ has a decision file
@@ -217,7 +237,7 @@ profile:
 # ------------------------------------------------------------------ phase 10: coverage
 coverage:
   min_support: 2                           # fewer observations = "investigate"
-  confidence: 0.95
+  confidence: 0.95                         # level of the intervals reported in the coverage matrix
 
 # ------------------------------------------------------------------ phase 11: benchmark construction
 benchmark:

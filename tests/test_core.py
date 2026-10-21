@@ -223,28 +223,127 @@ class RepositoryScoreTest(unittest.TestCase):
         self.assertEqual(o["new"], 0.5)
 
 
+def V(n):
+    return {"type": "Variable", "name": n}
+
+
+def L(v, kind="number"):
+    return {"type": "Literal", "kind": kind, "value": v}
+
+
+def M(recv, sel, *args):
+    return {"type": "Message", "receiver": recv, "selector": sel, "arguments": list(args)}
+
+
+def R(e):
+    return {"type": "Return", "value": e}
+
+
+def method(sel, args, *stmts, temps=()):
+    return {"type": "Method", "selector": sel, "arguments": list(args), "pragmas": [],
+            "body": {"type": "Sequence", "temporaries": list(temps), "statements": list(stmts)}}
+
+
 class MethodFilterTest(unittest.TestCase):
-    def stm(self, src):
-        from pbr.method_filters import body_statements
-        return body_statements(strip_comments(src))
+    IV = {"name", "items"}
 
-    def test_statements(self):
-        self.assertEqual(self.stm("at: i put: v\n\t| x |\n\tx := i + 1.\n\tarray at: x put: v.\n\t^ v"),
-                         ["x := i + 1", "array at: x put: v", "^ v"])
-        self.assertEqual(self.stm("foo\n\t\"a comment.\"\n\t^ #(1 2. 3)"), ["^ #(1 2. 3)"])
-        self.assertEqual(self.stm("bar\n\t<primitive: 1>\n\t^ 'a.b'"), ["^ 'a.b'"])
-        self.assertEqual(self.stm("empty\n\t\"nothing\""), [])
+    def rules(self, ast, sel="m"):
+        from pbr.method_filters import analyse
+        r = analyse(ast, self.IV, sel, "", [])
+        return r["exclude"], r["review"]
 
-    def test_rules(self):
-        from pbr.method_filters import CONST_RE, INIT_STMT_RE, PLACEHOLDER_RE
-        for s in ("^ 42", "^ 'Pharo'", "^ #name", "^ true", "^ nil", "^ #(1 2 3)", "^ $a"):
-            self.assertTrue(CONST_RE.match(s), s)
-        for s in ("^ x", "^ self foo", "^ 1 + 2"):
-            self.assertFalse(CONST_RE.match(s), s)
-        for s in ("self subclassResponsibility", "^ self subclassResponsibility", "self shouldBeImplemented", "^ self",
-                  "self error: 'Not yet implemented'"):
-            self.assertTrue(PLACEHOLDER_RE.match(s), s)
-        self.assertFalse(PLACEHOLDER_RE.match("self error: 'empty stack'"))
-        for s in ("super initialize", "items := OrderedCollection new", "count := 0", "name := 'x'"):
-            self.assertTrue(INIT_STMT_RE.match(s), s)
-        self.assertFalse(INIT_STMT_RE.match("items := self defaultItems collect: [ :e | e copy ]"))
+    def test_getter_setter_constant(self):
+        self.assertEqual(self.rules(method("name", [], R(V("name"))))[0], ["simple getter"])
+        self.assertEqual(self.rules(method("name:", ["a"], {"type": "Assignment", "variable": V("name"), "value": V("a")}))[0],
+                         ["simple setter"])
+        self.assertEqual(self.rules(method("name:", ["a"], {"type": "Assignment", "variable": V("name"), "value": V("a")},
+                                           R(V("self"))))[0], ["simple setter"])
+        for c in (L(42), L("x", "string"), V("true"), V("nil"), {"type": "DynamicArray", "statements": [L(1), L(2)]}):
+            self.assertEqual(self.rules(method("k", [], R(c)))[0], ["returns a constant"])
+        self.assertEqual(self.rules(method("t", [], R(V("tmp")), temps=["tmp"]))[0], [], "a temporary is not a getter")
+        # the parser stores an assignment target as a bare name
+        self.assertEqual(self.rules(method("name:", ["a"], {"type": "Assignment", "variable": "name", "value": V("a")}))[0],
+                         ["simple setter"])
+
+    def test_placeholder_empty(self):
+        self.assertEqual(self.rules(method("a", []))[0], ["empty method"])
+        self.assertEqual(self.rules(method("a", [], M(V("self"), "subclassResponsibility")))[0], ["placeholder"])
+        self.assertEqual(self.rules(method("a", [], R(V("self"))))[0], ["placeholder"])
+        self.assertEqual(self.rules(method("a", [], M(V("self"), "error:", L("Not yet implemented", "string"))))[0], ["placeholder"])
+        self.assertEqual(self.rules(method("a", [], M(V("self"), "error:", L("empty stack", "string"))))[0], [])
+
+    def test_initialisation(self):
+        trivial = method("initialize", [], M(V("super"), "initialize"),
+                         {"type": "Assignment", "variable": V("items"), "value": M(V("OrderedCollection"), "new")},
+                         {"type": "Assignment", "variable": V("name"), "value": L("x", "string")})
+        self.assertEqual(self.rules(trivial, "initialize")[0], ["trivial initialisation"])
+        real = method("initialize", [], {"type": "Assignment", "variable": V("items"),
+                                         "value": M(M(V("self"), "defaults"), "collect:", {"type": "Block", "arguments": [], "body": {}})})
+        ex, rev = self.rules(real, "initialize")
+        self.assertEqual((ex, rev), ([], ["non-trivial initialisation"]))
+
+    def test_forwarding(self):
+        self.assertEqual(self.rules(method("size", [], R(M(V("items"), "size"))))[1], ["simple message forwarding"])
+        self.assertEqual(self.rules(method("add:", ["x"], M(V("items"), "add:", V("x"))))[1], ["simple message forwarding"])
+        self.assertEqual(self.rules(method("odd", [], R(M(V("items"), "select:", {"type": "Block", "arguments": ["e"], "body": {}}))))[1], [])
+
+    def test_globals(self):
+        from pbr.method_filters import analyse
+        r = analyse(method("g", ["a"], R(M(V("ZnClient"), "get:", V("a")))), self.IV, "g", "", [])
+        self.assertEqual(r["globals"], ["ZnClient"])
+
+
+class SaturationTest(unittest.TestCase):
+    def test_cochran_and_patience(self):
+        self.assertEqual(A.cochran(10 ** 9), 385)
+        self.assertEqual(A.cochran(690057), 384)
+        self.assertEqual(A.cochran(4372), 354)
+        self.assertEqual(A.saturation_patience(0.005, 50), 12)
+
+    def test_novelty_needs_support(self):
+        from pbr.phases.discovery import Novelty
+
+        class Fake:      # identical texts → identical vectors; different texts → orthogonal
+            def __init__(self):
+                self.ids = {}
+
+            def embed(self, texts):
+                out = []
+                for t in texts:
+                    i = self.ids.setdefault(t, len(self.ids))
+                    v = [0.0] * 20
+                    v[i] = 1.0
+                    out.append(v)
+                return out
+
+        n = Novelty(Fake(), 0.85, 2)
+        row = lambda b: {"behaviors": [{"category": "C", "subcategory": "S", "behavior": b}]}  # noqa: E731
+        self.assertEqual(n.add([row("sort"), row("filter")]), 0)      # one item each: not yet behaviours
+        self.assertEqual(n.add([row("sort")]), 1)                      # "sort" reaches 2 items: new
+        self.assertEqual(n.add([row("sort"), row("odd")]), 0)          # nothing new
+        self.assertEqual(n.established, 1)
+
+
+class MergeSimilarityTest(unittest.TestCase):
+    def test_items_change_the_similarity(self):
+        import numpy as np
+        from pbr.phases.taxonomy import similarity
+        emb = np.array([[1.0, 0.0], [0.8, 0.6], [0.8, 0.6]])          # cos(0,1) = cos(0,2) = 0.8
+        items = [{"a", "b", "c"}, {"a", "b", "c"}, {"x", "y"}]
+        s = similarity(emb, items, 0.6, 0.4)
+        self.assertAlmostEqual(s[0, 1], 0.6 * 0.8 + 0.4 * 1.0)     # same items: more similar
+        self.assertAlmostEqual(s[0, 2], 0.6 * 0.8)                 # disjoint items: less similar
+        seen = [{"a", "b", "c"}, {"a", "b", "c", "z"}, {"a", "b", "c"}]
+        s2 = similarity(emb, [{"a", "b"}, {"a", "b", "z"}, set()], 0.6, 0.4, seen)
+        self.assertAlmostEqual(s2[0, 1], 0.6 * 0.8 + 0.4 * 1.0, msg="items only one annotator saw do not count")
+
+    def test_item_sets_roll_up(self):
+        from pbr.phases.taxonomy import item_sets
+        df = pd.DataFrame([
+            {"key": "c", "level": "category", "parent": None, "examples": []},
+            {"key": "s", "level": "subcategory", "parent": "c", "examples": []},
+            {"key": "b1", "level": "behavior", "parent": "s", "examples": ["i1", "i2"]},
+            {"key": "b2", "level": "behavior", "parent": "s", "examples": ["i2", "i3"]}])
+        sets = dict(zip(df["key"], item_sets(df)))
+        self.assertEqual(sets["s"], {"i1", "i2", "i3"})
+        self.assertEqual(sets["c"], {"i1", "i2", "i3"})

@@ -18,7 +18,7 @@ import re
 import shutil
 import sys
 
-from .common import (BY_NUM, PHASES, PhaseWaiting, ROOT, STATUS_ICON, _hms, fingerprint, is_up_to_date, load_config,
+from .common import (BY_NUM, PHASES, STAGE1_LAST, PhaseWaiting, ROOT, STATUS_ICON, _hms, fingerprint, is_up_to_date, load_config,
                      phase_dirname, phase_state, read_jsonl, results_dir, running, show, write_summary, write_text)
 
 MODULES = {num: f"pbr.phases.{key}" for num, key, *_ in PHASES}   # pbr/phases/<name>.py
@@ -26,8 +26,8 @@ MODULES = {num: f"pbr.phases.{key}" for num, key, *_ in PHASES}   # pbr/phases/<
 
 def parse_targets(args: list[str]) -> tuple[list[int], bool]:
     """(phases, force). No argument = all phases, unforced (skip what is up to date)."""
-    if not args:
-        return [p[0] for p in PHASES], False
+    if not args:                        # the whole pipeline: stage 1, repositories → two final taxonomies
+        return [p[0] for p in PHASES if p[0] <= STAGE1_LAST], False
     if args[0] == "from":
         start = int(args[1])
         return [p[0] for p in PHASES if p[0] >= start], True
@@ -60,6 +60,12 @@ def phase_readme(cfg: dict, num: int):
 
 
 def run_phases(cfg: dict, phases: list[int], force: bool) -> int:
+    later = [n for n in phases if n > STAGE1_LAST]
+    if later:
+        print(f"Phases {later} belong to stage 2 (validation on new samples, profile, coverage, benchmark, evaluation): "
+              f"they still expect one shared taxonomy and are not yet adapted to the two final taxonomies of phase "
+              f"{STAGE1_LAST}. Only phases ≤ {STAGE1_LAST} are run.")
+        phases = [n for n in phases if n <= STAGE1_LAST]
     for num in phases:
         title = BY_NUM[num][2]
         if not force and is_up_to_date(cfg, num):
@@ -203,6 +209,10 @@ def main(argv=None) -> int:
         code = run_phases(cfg, phases, force)
         write_summary(cfg)
         return code
+    if a.command == "diagram":
+        from .diagram import draw
+        print(draw())
+        return 0
     if a.command == "setup":
         from .setup import main as setup_main
         return setup_main(cfg)

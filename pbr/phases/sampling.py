@@ -33,7 +33,7 @@ import pandas as pd
 from .. import figures as F
 from ..common import write_csv, write_json
 
-SPLITS = [("discovery", "pharo_discovery", "pharo_discovery_targeted"),
+SPLITS = [("discovery", None, "pharo_discovery_targeted"),
           ("annotation", "pharo_annotation", "pharo_annotation_targeted"),
           ("profile", "pharo_profile", None)]
 COLS = ["method_id", "repository", "class_name", "side", "selector", "is_test", "parse_status", "over_long",
@@ -94,9 +94,10 @@ def allocate(total: int, groups: pd.DataFrame, how: str) -> dict:
     return base.to_dict()
 
 
-def draw_random(ph, m: pd.DataFrame, repos: pd.DataFrame, total: int, used: set, rng, split: str) -> list[dict]:
+def draw_random(ph, m: pd.DataFrame, repos: pd.DataFrame, total: int, used: set, rng, split: str,
+                k: int | None = None) -> list[dict]:
     s = ph.cfg["sampling"]
-    k = int(s.get("methods_per_repo", 3))
+    k = int(k or s.get("methods_per_repo", 3))
     groups = repos.groupby("group").agg(repos=("repository", "size"), methods=("eligible_methods", "sum"))
     alloc = allocate(total, groups, s.get("allocation", "equal"))
     avail = m[~m["method_id"].isin(used)]
@@ -175,10 +176,44 @@ def draw_targeted(ph, m: pd.DataFrame, total: int, used: set, rng, split: str, m
     return out[:total]
 
 
-def literature(ph, rng) -> tuple[pd.DataFrame, dict]:
+def discovery_plan(ph, population: int) -> dict:
+    """Start size (95% confidence by default), round size, patience and the pool reserved for the saturation loop."""
+    from ..agreement import cochran, saturation_patience
+    d, z = ph.cfg["discovery"], ph.sizes
+    n0 = z.get("discovery_initial") or d.get("initial_size") or cochran(population, float(d["confidence"]),
+                                                                        float(d["margin"]), float(d["proportion"]))
+    rnd = int(z.get("discovery_round") or d["round_size"])
+    patience = int(z.get("discovery_patience") or d.get("patience") or
+                   saturation_patience(float(d["min_share"]), rnd, float(d["confidence"])))
+    max_rounds = int(z.get("discovery_max_rounds") or d["max_rounds"])
+    pool = min(population, int(n0) + max_rounds * rnd)
+    return {"population": int(population), "initial": int(min(n0, population)), "round_size": rnd, "patience": patience,
+            "max_rounds": max_rounds, "pool": int(pool),
+            "computed_from": None if (z.get("discovery_initial") or d.get("initial_size")) else
+            f"Cochran, {d['confidence']:.0%} confidence, ±{d['margin']:.0%}, p={d['proportion']}, finite population {population:,}"}
+
+
+def literature(ph, rng, disc_pool: int) -> tuple[pd.DataFrame, dict]:
     lit = pd.read_parquet(ph.upstream("literature", "literature_tasks.parquet"), columns=["task_uid", "benchmark", "dedup_key", "task_type"])
     used_keys, rows, plan = set(), [], {}
-    for split, key in (("discovery", "literature_discovery_per_benchmark"), ("annotation", "literature_annotation_per_benchmark")):
+    # discovery: one problem counted once; the pool is spread over the benchmarks in proportion to their problems,
+    # then put in a random order (the saturation loop takes it in that order)
+    uniq = lit.drop_duplicates("dedup_key")
+    pops = uniq.groupby("benchmark").size()
+    alloc = allocate(disc_pool, pd.DataFrame({"methods": pops}), "proportional")
+    plan["discovery"] = {}
+    disc = []
+    for b, g in sorted(uniq.groupby("benchmark"), key=lambda x: x[0]):
+        take = g.sample(min(int(alloc.get(b, 0)), len(g)), random_state=int(rng.integers(1 << 31))) if len(g) else g
+        used_keys |= set(take["dedup_key"])
+        plan["discovery"][b] = {"population": int(len(g)), "sampled": int(len(take))}
+        disc += [{"task_uid": t.task_uid, "benchmark": b, "task_type": t.task_type, "split": "discovery",
+                  "weight": round(len(g) / max(len(take), 1), 3)} for t in take.itertuples()]
+    order = rng.permutation(len(disc))
+    for o, i in enumerate(order):
+        disc[i]["order"] = o
+    rows += disc
+    for split, key in (("annotation", "literature_annotation_per_benchmark"),):
         k = int(ph.sizes[key])
         plan[split] = {}
         for b, g in sorted(lit.groupby("benchmark"), key=lambda x: x[0]):
@@ -189,6 +224,70 @@ def literature(ph, rng) -> tuple[pd.DataFrame, dict]:
             rows += [{"task_uid": t.task_uid, "benchmark": b, "task_type": t.task_type, "split": split,
                       "weight": round(plan[split][b]["population"] / max(len(take), 1), 3)} for t in take.itertuples()]
     return pd.DataFrame(rows), plan
+
+
+REP_FEATURES = ["has_conditional", "has_loop", "has_collection_iteration", "has_exception_handler", "has_exception_signal",
+                "has_recursion", "has_reflection", "has_metaprogramming", "has_dynamic_send", "has_super_send",
+                "has_instance_creation", "has_nonlocal_return", "has_cascade", "has_block_evaluation"]
+
+
+def representativeness(ph, sample: pd.DataFrame, plans: dict, lit_sample: pd.DataFrame):
+    """Does the discovery start sample reflect the population? For Pharo: the share of methods with each AST
+    feature, the size (statements) and the domain, in the eligible population vs in the start sample (design-weighted,
+    95% interval with repositories as clusters). For the benchmarks: the share of each benchmark and task type."""
+    from ..agreement import weighted_share
+    cols = ["method_id", "repository", "n_statements"] + REP_FEATURES
+    pop = pd.read_parquet(ph.upstream("corpus", "methods.parquet"), columns=cols)
+    dec = pd.read_parquet(ph.upstream("corpus", "method_filters.parquet"), columns=["method_id", "decision"])
+    wanted = {"keep", "review"} if ph.cfg["method_filters"].get("include_review", True) else {"keep"}
+    pop = pop[pop["method_id"].isin(set(dec.loc[dec["decision"].isin(wanted), "method_id"]))]
+    start = sample[(sample["split"] == "discovery") & sample["order"].notna()].sort_values("order").head(plans["pharo"]["initial"])
+    st = start.merge(pop, on=["method_id", "repository"], how="left")
+    pop = pop.assign(size_le_3=pop["n_statements"] <= 3, size_4_10=pop["n_statements"].between(4, 10),
+                     size_gt_10=pop["n_statements"] > 10)
+    st = st.assign(size_le_3=st["n_statements"] <= 3, size_4_10=st["n_statements"].between(4, 10), size_gt_10=st["n_statements"] > 10)
+    rows = []
+    for f in REP_FEATURES + ["size_le_3", "size_4_10", "size_gt_10"]:
+        ws = weighted_share(st[f].astype(float), st["weight"], st["repository"], st["group"])
+        p_ = float(pop[f].mean())
+        rows.append({"source": "pharo", "measure": f, "population_share": round(p_, 4), "sample_share": ws["share"],
+                     "ci_low": ws["ci_low"], "ci_high": ws["ci_high"], "n_sample": ws["n"], "n_population": int(len(pop)),
+                     "consistent": bool(ws["ci_low"] is not None and ws["ci_low"] <= p_ <= ws["ci_high"])})
+    lit = pd.read_parquet(ph.upstream("literature", "literature_tasks.parquet"), columns=["benchmark", "dedup_key", "task_type"]).drop_duplicates("dedup_key")
+    ls_ = lit_sample[(lit_sample["split"] == "discovery")].sort_values("order").head(plans["literature"]["initial"])
+    for col in ("benchmark", "task_type"):
+        for v, share in lit[col].value_counts(normalize=True).items():
+            k = int((ls_[col] == v).sum())
+            from ..agreement import wilson
+            lo, hi = wilson(k, len(ls_))
+            rows.append({"source": "literature", "measure": f"{col}={v}", "population_share": round(float(share), 4),
+                         "sample_share": round(k / max(len(ls_), 1), 4), "ci_low": round(lo, 4), "ci_high": round(hi, 4),
+                         "n_sample": int(len(ls_)), "n_population": int(len(lit)), "consistent": bool(lo <= share <= hi)})
+    rep = pd.DataFrame(rows)
+    write_csv(ph.path("representativeness.csv"), rep)
+    for src in ("pharo", "literature"):
+        r = rep[rep["source"] == src]
+        if r.empty:
+            continue
+        ph.metric(f"representative_{src}", f"{int(r['consistent'].sum())}/{len(r)}")
+        fig, ax = F.plt.subplots(figsize=(8.5, max(3, 0.32 * len(r) + 1.4)))
+        y = np.arange(len(r))[::-1]
+        ax.errorbar(r["sample_share"] * 100, y, xerr=[(r["sample_share"] - r["ci_low"]).clip(lower=0) * 100,
+                                                      (r["ci_high"] - r["sample_share"]).clip(lower=0) * 100],
+                    fmt="o", color=F.SERIES[0], ms=5, capsize=2, lw=1, label="start sample (95% interval)")
+        ax.scatter(r["population_share"] * 100, y, marker="|", s=160, color=F.SERIES[1], lw=2, label="population", zorder=3)
+        ax.set_yticks(y, [m.replace("has_", "").replace("_", " ") for m in r["measure"]])
+        ax.grid(axis="y", visible=False)
+        ax.set_xlabel("% of items")
+        ax.set_title(f"Is the start sample representative? {SRC_NAME[src]} ({int(r['consistent'].sum())} of {len(r)} "
+                     f"population values inside the interval)")
+        ax.legend(loc="lower right")
+        F.save(fig, ph.figure(f"representativeness_{src}.png"),
+               note=f"start sample of {int(r['n_sample'].iloc[0])} items vs {int(r['n_population'].iloc[0]):,} eligible; "
+                    "Pharo: design-weighted, repositories as clusters")
+
+
+SRC_NAME = {"pharo": "Pharo methods", "literature": "benchmark tasks"}
 
 
 def run(ph):
@@ -202,9 +301,21 @@ def run(ph):
     masks = {name: signal_mask(m, spec) for name, spec in (ph.cfg["sampling"].get("targeted_signals") or {}).items()}
     signal_counts = {k: int(v.sum()) for k, v in masks.items()}
 
+    lit_pop = int(pd.read_parquet(ph.upstream("literature", "literature_tasks.parquet"), columns=["dedup_key"])["dedup_key"].nunique())
+    plans = {"pharo": discovery_plan(ph, int(len(m))), "literature": discovery_plan(ph, lit_pop)}
+    for src, pl in plans.items():
+        ph.log.info(f"discovery {src}: start {pl['initial']} items ({pl['computed_from'] or 'fixed size'}), then rounds of "
+                    f"{pl['round_size']} until {pl['patience']} rounds in a row add nothing (at most {pl['max_rounds']}): "
+                    f"pool of {pl['pool']} reserved")
     used, rows = set(), []
     for split, rkey, tkey in SPLITS:
-        r = draw_random(ph, m, repos, int(ph.sizes[rkey]), used, rng, split)
+        if split == "discovery":    # an ordered pool: the saturation loop of phase 5 takes it in this order
+            r = draw_random(ph, m, repos, plans["pharo"]["pool"], used, rng, split,
+                            k=int(ph.cfg["discovery"].get("methods_per_repo", 4)))
+            for o, i in enumerate(rng.permutation(len(r))):
+                r[i]["order"] = o
+        else:
+            r = draw_random(ph, m, repos, int(ph.sizes[rkey]), used, rng, split)
         used |= {x["method_id"] for x in r}
         t = draw_targeted(ph, m, int(ph.sizes[tkey]) if tkey else 0, used, rng, split, masks)
         used |= {x["method_id"] for x in t}
@@ -225,7 +336,7 @@ def run(ph):
     assert sample["method_id"].is_unique, "splits must be disjoint"
     write_csv(ph.path("pilot_sample.csv"), sample)
 
-    lit, lit_plan = literature(ph, rng)
+    lit, lit_plan = literature(ph, rng, plans["literature"]["pool"])
     write_csv(ph.path("literature_sample.csv"), lit)
     ph.log.info(f"literature: {int((lit['split'] == 'discovery').sum())} discovery tasks, "
                 f"{int((lit['split'] == 'annotation').sum())} annotation tasks, {lit['benchmark'].nunique()} benchmarks")
@@ -245,8 +356,11 @@ def run(ph):
         "targeted_signals": {"eligible_methods_per_signal": signal_counts,
                              "note": "targeted methods have no design weight and are never used for frequencies"},
         "literature": {"plan": lit_plan, "note": "one task per problem (dedup_key); weight = problems of the benchmark / sampled"},
+        "discovery": {"plans": plans, "note": "ordered pools: phase 5 starts with the first `initial` items and adds "
+                      "rounds of `round_size` until saturation; the annotation and profile splits are disjoint from the pools"},
     }
     write_json(ph.path("sampling_design.json"), design)
+    representativeness(ph, sample, plans, lit)
     ph.metric("eligible_methods", rules["eligible_methods"])
     ph.metric("eligible_repositories", rules["eligible_repositories"])
     ph.metric("groups", int(len(groups)))

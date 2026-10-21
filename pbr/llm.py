@@ -107,7 +107,7 @@ class Client:
         self.limiter = _RateLimiter(float(spec.get("requests_per_minute", llm.get("requests_per_minute", 0)) or 0))
         rd = results_dir(cfg)
         # one cache for every profile: answers obtained in a smoke test are reused by the real run
-        self.cache_dir = resolve(cfg["project"].get("cache_dir", "results/cache")) / "llm" / _slug(f"{self.provider}_{self.model}")
+        self.cache_dir = resolve(cfg["project"].get("cache_dir", "data/llm-cache")) / "llm" / _slug(f"{self.provider}_{self.model}")
         self.ledger = rd / "logs" / "llm_calls.jsonl"
         self._info = None
         self._thinks = False

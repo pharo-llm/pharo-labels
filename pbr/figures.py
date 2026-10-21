@@ -174,27 +174,41 @@ def scatter_labeled(x, y, labels, title, xlabel, ylabel, path, *, groups=None, n
 
 def taxonomy_tree(blocks: list, title: str, path: Path, ncol: int = 3, note: str | None = None,
                   last_apart: bool = False) -> Path:
-    """A taxonomy as boxes: one box per category, its subcategories in bold, their behaviours below.
+    """A taxonomy as boxes (the layout of the taxonomy figures): one box per category (bold), its subcategories (grey
+    bold), their behaviours (``●●○  B001 name``: one ● per model that proposed it).
 
-    blocks: [(category label, [(subcategory label, [behaviour, ...]), ...]), ...]. A behaviour is a string, or a
-    dict {"label", "count", "marker"}: ``marker`` (e.g. ●●○, which models proposed it) is drawn first, then a small
-    bar proportional to ``count`` (the items classified under the behaviour; scaled to the largest count of the
-    figure) and the count itself, then the label. Boxes are packed into ``ncol`` columns."""
-    cat_w, sub_w, beh_w = 48, 56, 66
-    counts = [b["count"] for _, subs in blocks for _, bs in subs for b in bs if isinstance(b, dict) and b.get("count") is not None]
-    cmax = max(counts + [1])
+    blocks: [(category, [(subcategory, [behaviour, ...]), ...]), ...]; each entry is a string or a dict
+    {"label", "count", "marker"}. ``count`` = the items classified there: drawn as a thin bar with the number —
+    under the ●●○ of a behaviour, right-aligned on the line of a category or a subcategory. Bars are scaled per level
+    (the largest category, subcategory and behaviour of the figure have a full bar)."""
+    def lab(x):
+        return x["label"] if isinstance(x, dict) else x
+
+    def cnt(x):
+        return x.get("count") if isinstance(x, dict) else None
+
+    mx = {"cat": 1, "sub": 1, "beh": 1}
+    for cat, subs in blocks:
+        mx["cat"] = max(mx["cat"], cnt(cat) or 0)
+        for sub, behs in subs:
+            mx["sub"] = max(mx["sub"], cnt(sub) or 0)
+            for b in behs:
+                mx["beh"] = max(mx["beh"], cnt(b) or 0)
+    IND = 0.42                                    # height of the indicator row under a behaviour
     measured = []
     for cat, subs in blocks:
-        rows = [("cat", wrap(cat, cat_w), None)]
+        rows = [("cat", wrap(lab(cat), 44), cat)]
         for sub, behs in subs:
-            rows.append(("sub", wrap(sub, sub_w), None))
+            rows.append(("sub", wrap(lab(sub), 50), sub))
             for b in behs:
-                if isinstance(b, dict):
-                    rows.append(("beh", wrap(b["label"], beh_w - (10 if b.get("marker") else 4)), b))
-                else:
-                    rows.append(("beh", wrap(b, beh_w), None))
-        h = 0.6 + sum({"cat": 1.2, "sub": 0.95, "beh": 0.82}[k] * (t.count("\n") + 1) for k, t, _ in rows) + 0.3
-        measured.append((rows, h))
+                text = (f"{b['marker']}  " if isinstance(b, dict) and b.get("marker") else "") + lab(b)
+                rows.append(("beh", wrap(text, 80), b))
+        h = 0.6
+        for kind, t, item in rows:
+            h += {"cat": 1.2, "sub": 0.95, "beh": 0.82}[kind] * (t.count("\n") + 1)
+            if kind == "beh" and cnt(item) is not None:
+                h += IND
+        measured.append((rows, h + 0.3))
     cols, colh = [[] for _ in range(ncol)], [0.0] * ncol
     n_main = len(blocks) - 1 if last_apart else len(blocks)      # last_apart: the last block is drawn after the others
     order = sorted(range(n_main), key=lambda i: -measured[i][1]) + list(range(n_main, len(blocks)))
@@ -208,7 +222,18 @@ def taxonomy_tree(blocks: list, title: str, path: Path, ncol: int = 3, note: str
     ax.set_xlim(0, ncol)
     ax.set_ylim(H, 0)
     ax.axis("off")
-    bar_w = 0.075                                   # width of the largest count's bar (in column units)
+
+    def indicator(x0, y, c, level, width, right=False):
+        """A thin bar (share of the level's maximum) and the number; ``right``: bar and number end at x0."""
+        w = width * c / mx[level]
+        if right:
+            ax.text(x0, y, str(c), va="center", ha="right", fontsize=6.5, color=INK_2)
+            x0 = x0 - 0.05 - width
+        ax.add_patch(plt.Rectangle((x0, y - 0.11), width, 0.22, facecolor=GRID, edgecolor="none"))
+        ax.add_patch(plt.Rectangle((x0, y - 0.11), max(w, 0.003), 0.22, facecolor=SERIES[0], edgecolor="none"))
+        if not right:
+            ax.text(x0 + width + 0.006, y, str(c), va="center", fontsize=6, color=INK_2)
+
     for k, col in enumerate(cols):
         y = 0.3
         for i in col:
@@ -221,25 +246,14 @@ def taxonomy_tree(blocks: list, title: str, path: Path, ncol: int = 3, note: str
                 x = {"cat": 0.04, "sub": 0.06, "beh": 0.09}[kind]
                 style = {"cat": dict(fontsize=9.5, weight="bold"), "sub": dict(fontsize=8, weight="bold", color=INK_2),
                          "beh": dict(fontsize=7)}[kind]
-                ymid = yy + step * (n - 1) / 2
-                if item is not None:
-                    xx = k + x
-                    yline = yy                     # the indicator sits on the first line of the label
-                    if item.get("marker"):
-                        ax.text(xx, yline, item["marker"], va="center", fontsize=7, color=INK)
-                        xx += 0.055
-                    c = item.get("count")
-                    if c is not None:
-                        w = bar_w * c / cmax
-                        ax.add_patch(plt.Rectangle((xx, yline - 0.22), max(w, 0.004), 0.44, facecolor=SERIES[0],
-                                                   edgecolor="none"))
-                        ax.add_patch(plt.Rectangle((xx, yline - 0.22), bar_w, 0.44, facecolor="none", edgecolor=GRID, lw=0.6))
-                        ax.text(xx + bar_w + 0.006, yline, str(c), va="center", fontsize=6.5, color=INK_2)
-                        xx += bar_w + 0.04
-                    ax.text(xx, ymid, text, va="center", linespacing=1.15, **style)
-                else:
-                    ax.text(k + x, ymid, text, va="center", linespacing=1.15, **style)
+                ax.text(k + x, yy + step * (n - 1) / 2, text, va="center", linespacing=1.15, **style)
+                c = cnt(item)
+                if c is not None and kind in ("cat", "sub"):
+                    indicator(k + 0.955, yy, c, kind, 0.06, right=True)
                 yy += step * n
+                if c is not None and kind == "beh":     # under the ●●○
+                    indicator(k + 0.09, yy - 0.28, c, "beh", 0.045)
+                    yy += IND
             y += h + 0.6
     fig.suptitle(title, fontsize=12, x=0.01, ha="left", weight="bold")
     return save(fig, path, note)

@@ -35,7 +35,7 @@ def load_items(ph, split: str, include_targeted: bool = True) -> pd.DataFrame:
         lit = lit_s.merge(lit, on=["task_uid", "benchmark", "task_type"], how="left")
         for r in lit.itertuples():
             rows.append({"item_id": f"L:{r.task_uid}", "source": "literature", "group": r.benchmark, "purpose": "random",
-                         "subset": "literature",
+                         "subset": "literature", "order": getattr(r, "order", None),
                          "weight": r.weight, "repository": None, "title": f"{r.benchmark_name} {r.item_id}",
                          "task_type": r.task_type, "language": r.language,
                          "provenance": f"{r.source_dataset}@{str(r.source_revision)[:12]} item {r.item_id}",
@@ -46,13 +46,15 @@ def load_items(ph, split: str, include_targeted: bool = True) -> pd.DataFrame:
                 "source_path", "line"]
         m = pd.read_parquet(ph.upstream("corpus", "methods.parquet"), columns=cols,
                             filters=[("method_id", "in", list(sample["method_id"]))])
-        keep = [c for c in ("method_id", "group", "purpose", "signal", "weight", "subset", "filter_decision", "filter_reasons")
+        keep = [c for c in ("method_id", "group", "purpose", "signal", "weight", "subset", "filter_decision", "filter_reasons",
+                            "order")
                 if c in sample.columns]
         m = sample[keep].merge(m, on="method_id", how="left")
         context = ph.cfg.get("annotation", {}).get("context", "class")
         for r in m.itertuples():
             rows.append({"item_id": f"P:{r.method_id}", "source": "pharo", "group": r.group, "purpose": r.purpose,
                          "subset": getattr(r, "subset", "production"), "filter_decision": getattr(r, "filter_decision", None),
+                         "order": getattr(r, "order", None),
                          "filter_reasons": getattr(r, "filter_reasons", None),
                          "weight": r.weight, "repository": r.repository, "title": f"{r.class_name}{' class' if r.side == 'class' else ''}>>{r.selector}",
                          "task_type": None, "language": "Pharo", "signal": r.signal,

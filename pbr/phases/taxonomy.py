@@ -1,17 +1,23 @@
-"""Phase 6 — Shared taxonomy construction.
+"""Phase 6 — The two final taxonomies: one for the Pharo methods, one for the existing benchmark tasks.
+
+For each source separately (``pharo``, ``literature``), the taxonomies the three annotators built on their own in
+phase 5 become one shared taxonomy, written to ``06_taxonomy/<source>/``:
 
 1. **Flatten** the three candidate taxonomies of phase 5 into concepts (model, level, name, definition,
    rules, example items, parent).
-2. **Candidate groups** per level: sentence embeddings of "name: definition" (config ``llm.embedder``),
-   agglomerative clustering (average linkage, cosine) at the loose ``taxonomy.candidate_threshold``,
-   groups larger than ``max_group_size`` re-split. Embeddings only propose: on such phrases they rate
-   "iterate" and "filter" closer than two wordings of "filter".
-3. **Judged merges**: the editor model reads each candidate group and partitions it into concepts whose
-   members mean the same thing, writing one name, definition, inclusion and exclusion rules per concept
+2. **Candidate groups** per level, on a COMBINED similarity: 0.6 × cosine of the text embeddings ("name:
+   definition", ``llm.embedder``) + 0.4 × the overlap (Jaccard) of the items the concepts classify, on the items both
+   annotators saw (``taxonomy.similarity_weights``); a category or subcategory holds every item under it. The
+   annotators classified the same items: the same items are evidence of the same meaning, different items of a
+   different one. Average-linkage clustering at ``taxonomy.candidate_threshold``; groups larger than
+   ``max_group_size`` re-split. Embeddings alone rate "iterate" and "filter" closer than two wordings of "filter".
+3. **Judged merges**: the editor model reads each candidate group (members with their number of items, largest
+   first) and partitions it into concepts whose members mean the same thing, writing one name, definition, inclusion and exclusion rules per concept
    (a single proposal keeps its model's text). Groups the editor split are listed for review
    (``merge_candidates.csv``, sheet "Merge candidates"): matching names alone are never enough (§5).
-4. **Hierarchy**: a behaviour goes under the subcategory most of its members were under; a subcategory
-   under the category most of its members were under (so the result is a tree). Each concept records the
+4. **Hierarchy, weighted by items**: a behaviour goes under the subcategory where most of its members' items were
+   placed; a subcategory under the category where most of its items were (so the result is a tree); concept
+   centres are weighted by items too. Each concept records the
    models that proposed it.
 5. **Stable IDs**: ``results/taxonomy_registry.json`` remembers which members got which ID, so a rerun
    (or a new version) gives the same concept the same ID.
@@ -20,9 +26,10 @@
    ``review/returned/`` are applied to the draft to produce taxonomy_v1. Without them, v1 is the
    unreviewed draft and the phase is *provisional* (``taxonomy.require_review: true`` stops instead).
 
-Outputs: taxonomy_v0_draft.json, taxonomy_v1.json, taxonomy_aliases.csv, merge_candidates.csv,
-annotation_guidelines_v1.md, review/taxonomy_review.xlsx, figures: taxonomy_v1.png, model_overlap.png,
-support_per_behavior.png.
+Outputs per source (06_taxonomy/<source>/): taxonomy_v0_draft.json, taxonomy_v1.json, taxonomy_aliases.csv,
+merge_candidates.csv, annotation_guidelines_v1.md, review/taxonomy_review.xlsx (completed files: review/returned/),
+figures: taxonomy_v1.png (●●○ = annotators that proposed a behaviour; bar and number = items classified in each
+category, subcategory and behaviour), model_overlap.png, support_per_behavior.png.
 """
 from __future__ import annotations
 
@@ -38,7 +45,7 @@ from .. import workbook as W
 from ..common import PhaseWaiting, now_iso, read_json, results_dir, write_csv, write_json, write_text
 from ..llm import Client, annotators, ledger_summary
 
-PROMPT_VERSION = "taxonomy-editor-v2"   # judged merges; harmonisation prompts share it
+PROMPT_VERSION = "taxonomy-editor-v3"   # judged merges; harmonisation prompts share it
 
 _CONCEPT = {"type": "object", "properties": {
     "members": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
@@ -51,6 +58,8 @@ EDIT_SCHEMA = {"type": "object", "properties": {"concepts": {"type": "array", "i
 
 EDIT_SYSTEM = """You edit a taxonomy of programming behaviours built by three independent annotators. You receive numbered concepts that an embedding model found SIMILAR; similar is not the same.
 Partition them: put members in the same concept ONLY if they mean the same thing (synonyms, or one is a rewording of the other). Related but different behaviours (e.g. reading vs updating an element, iterating vs filtering) stay in separate concepts. Every member number appears in exactly one concept.
+Each member shows how many items the annotator classified under it: when you write a merged concept, follow the
+members that hold the most items (they are the best-supported meaning).
 For each concept write:
 - name: short and language-neutral (category or subcategory: a noun phrase; behaviour: an imperative phrase of 3 to 8 words);
 - definition: one precise sentence;
@@ -89,7 +98,7 @@ def flatten(cands: dict) -> pd.DataFrame:
                     rows.append({"key": f"{tag}|B|{c['name']}|{s['name']}|{b['name']}", "model": model, "source": source,
                                  "level": "behavior", "name": b["name"], "definition": b["definition"], "parent": sk,
                                  "include": b.get("include", []), "exclude": b.get("exclude", []),
-                                 "examples": b.get("examples", []), "evidence": b.get("evidence", []),
+                                 "examples": b.get("items") or b.get("examples", []), "evidence": b.get("evidence", []),
                                  "n_items": b.get("n_items", 0)})
         # proposals the model's own consolidation left out still count: under the category / subcategory the
         # model proposed for them (a weak consolidation must not erase a model's evidence)
@@ -107,37 +116,68 @@ def flatten(cands: dict) -> pd.DataFrame:
                 known.add(sk)
             rows.append({"key": f"{tag}|B|{c}|{s}|{b}", "model": model, "source": source, "level": "behavior", "name": b,
                          "definition": f"{b} ({c} › {s}); proposal not organised by the model's consolidation",
-                         "parent": sk, "include": [], "exclude": [], "examples": list(p.get("items", []))[:8],
+                         "parent": sk, "include": [], "exclude": [], "examples": list(p.get("items", [])),
                          "evidence": [], "n_items": len(p.get("items", []))})
     df = pd.DataFrame(rows)
     return df.drop_duplicates("key")
 
 
-def cluster(emb: np.ndarray, threshold: float) -> np.ndarray:
-    """Agglomerative clustering (average linkage) on cosine distance; distance cut = 1 - threshold."""
-    if len(emb) == 1:
+def cluster(sim: np.ndarray, threshold: float) -> np.ndarray:
+    """Agglomerative clustering (average linkage) on the distance 1 - similarity; cut at 1 - threshold."""
+    if len(sim) == 1:
         return np.array([0])
     from scipy.cluster.hierarchy import fcluster, linkage
-    from scipy.spatial.distance import pdist
-    d = np.clip(pdist(emb, metric="cosine"), 0, 2)
-    z = linkage(d, method="average")
+    from scipy.spatial.distance import squareform
+    d = np.clip(1 - sim, 0, 2)
+    np.fill_diagonal(d, 0)
+    z = linkage(squareform((d + d.T) / 2, checks=False), method="average")
     return fcluster(z, t=1 - threshold, criterion="distance") - 1
 
 
-def candidate_groups(emb: np.ndarray, threshold: float, max_size: int) -> np.ndarray:
+def candidate_groups(sim: np.ndarray, threshold: float, max_size: int) -> np.ndarray:
     """Loose clusters; a cluster larger than max_size is clustered again with a stricter threshold."""
-    lab = cluster(emb, threshold)
-    out = np.empty(len(emb), dtype=object)
+    lab = cluster(sim, threshold)
+    out = np.empty(len(sim), dtype=object)
     for l in np.unique(lab):
         idx = np.where(lab == l)[0]
         if len(idx) <= max_size or threshold >= 0.97:
             for i in idx:
                 out[i] = f"{l}"
             continue
-        sub = candidate_groups(emb[idx], threshold + 0.03, max_size)
+        sub = candidate_groups(sim[np.ix_(idx, idx)], threshold + 0.03, max_size)
         for i, s_ in zip(idx, sub):
             out[i] = f"{l}.{s_}"
     return out
+
+
+def item_sets(df: pd.DataFrame) -> list[set]:
+    """The items each concept classifies: a behaviour its own items; a subcategory or a category every item under
+    it (the same numbers the taxonomy figures show)."""
+    items = {r.key: set(r.examples or []) for r in df.itertuples() if r.level == "behavior"}
+    for lv in ("subcategory", "category"):
+        for r in df[df["level"] == lv].itertuples():
+            items[r.key] = set().union(*[items.get(c.key, set()) for c in df[df["parent"] == r.key].itertuples()])
+    return [items.get(k, set()) for k in df["key"]]
+
+
+def similarity(emb: np.ndarray, items: list[set], w_emb: float, w_items: float, seen: list[set] | None = None) -> np.ndarray:
+    """Combined similarity of concepts: w_emb × cosine of their text embeddings + w_items × Jaccard of the items
+    they classify. The annotators classified the same items, so two concepts holding the same items are evidence of
+    the same meaning even when they are worded differently; two concepts with similar words but disjoint items are
+    evidence of different meanings."""
+    cos = emb @ emb.T
+    n = len(items)
+    jac = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i, n):
+            a, b = items[i], items[j]
+            if seen is not None:          # compare on the items both annotators saw (they may stop at different rounds)
+                common = seen[i] & seen[j]
+                a, b = a & common, b & common
+            u = len(a | b)
+            jac[i, j] = jac[j, i] = (len(a & b) / u) if u else 0.0
+    tot = (w_emb + w_items) or 1
+    return (w_emb * cos + w_items * jac) / tot
 
 
 def majority(xs):
@@ -172,16 +212,50 @@ def assign_ids(clusters: dict, level: str, registry: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------- phase
+SOURCES = {"pharo": "Pharo methods", "literature": "existing benchmark tasks"}
+
+
+class SourcePhase:
+    """The phase seen from one source: files in <phase>/<source>/, metrics prefixed by the source."""
+
+    def __init__(self, ph, src: str):
+        self._ph, self.src = ph, src
+
+    def __getattr__(self, name):
+        return getattr(self._ph, name)
+
+    def path(self, *parts):
+        return self._ph.path(self.src, *parts)
+
+    def figure(self, name: str):
+        return self._ph.path(self.src, "figures", name)
+
+    def metric(self, key: str, value):
+        return self._ph.metric(f"{self.src}_{key}", value)
+
+    def mark_provisional(self, reason: str):
+        return self._ph.mark_provisional(f"{self.src}: {reason}")
+
+    def warn(self, msg: str):
+        return self._ph.warn(f"{self.src}: {msg}")
+
+
 def run(ph):
+    """Two final taxonomies: one from the three annotators' Pharo taxonomies, one from their benchmark taxonomies."""
+    for src, label in SOURCES.items():
+        ph.log.info(f"— shared taxonomy of the {label} (from the three annotators' {label} taxonomies) —")
+        build(SourcePhase(ph, src), src)
+
+
+def build(ph, src: str):
     names = [a["name"] for a in ph.cfg["llm"]["annotators"]]
     cands = {}
-    for n in names:                       # one candidate taxonomy per model and per source (phase 5)
-        for src in ("pharo", "literature"):
-            c = read_json(ph.upstream("discovery", n, src, "taxonomy.json"))
-            if not c or not c.get("categories"):
-                ph.warn(f"{n}/{src}: no usable candidate taxonomy (phase 5) — left out of the merge")
-                continue
-            cands[(n, src)] = c
+    for n in names:                       # the candidate taxonomy of each model for this source (phase 5)
+        c = read_json(ph.upstream("discovery", n, src, "taxonomy.json"))
+        if not c or not c.get("categories"):
+            ph.warn(f"{n}/{src}: no usable candidate taxonomy (phase 5) — left out of the merge")
+            continue
+        cands[(n, src)] = c
     if len(cands) < 2:
         raise RuntimeError("fewer than two candidate taxonomies: cannot build a shared one")
     df = flatten(cands)
@@ -189,14 +263,28 @@ def run(ph):
     embedder = Client({"name": "embedder", **ph.cfg["llm"]["embedder"]}, ph.cfg)
     texts = [f"clustering: {r.name}. {r.definition}" for r in df.itertuples()]
     emb = np.array(embedder.embed(texts))
+    df = df.reset_index(drop=True)
     df["emb_idx"] = range(len(df))
+    df["item_set"] = item_sets(df)
+    df["size"] = df["item_set"].map(len)           # items a concept classifies: its weight in the merge
+    seen_by = {m: set().union(*g.loc[g["level"] == "behavior", "item_set"]) for m, g in df.groupby("model")}
     thr = ph.cfg["taxonomy"]["candidate_threshold"]
+    wts = ph.cfg["taxonomy"].get("similarity_weights", {"embedding": 0.6, "items": 0.4})
     max_size = int(ph.cfg["taxonomy"].get("max_group_size", 9))
     df["group"] = None
+    sims = {}
     for lv in T.LEVELS:
         sub = df[df["level"] == lv]
-        lab = candidate_groups(emb[sub["emb_idx"].to_numpy()], float(thr[lv]), max_size)
+        sm = similarity(emb[sub["emb_idx"].to_numpy()], list(sub["item_set"]), float(wts["embedding"]), float(wts["items"]),
+                        seen=[seen_by[m] for m in sub["model"]])
+        sims[lv] = (list(sub.index), sm)
+        lab = candidate_groups(sm, float(thr[lv]), max_size)
         df.loc[sub.index, "group"] = [f"{lv}:{l}" for l in lab]
+    pos = {lv: {ix: k for k, ix in enumerate(ixs)} for lv, (ixs, _) in sims.items()}
+
+    def pair_sim(a, b) -> float:            # combined similarity of two concepts of one level
+        lv = df.at[a, "level"]
+        return float(sims[lv][1][pos[lv][a], pos[lv][b]])
 
     # judged merges: the editor partitions every candidate group into concepts of the same meaning
     editor = Client(ph.cfg["llm"]["editor"], ph.cfg)
@@ -206,10 +294,10 @@ def run(ph):
     ph.log.info(f"{len(groups)} candidate groups ({n_multi} with several members) → the editor judges each one")
     for gname, g in ph.progress(groups, "candidate groups judged", every_s=60):
         lv = g["level"].iloc[0]
-        rows_ = list(g.itertuples())
+        rows_ = sorted(g.itertuples(), key=lambda r: -r.size)     # members that classify the most items first
         parts = None
         if len(rows_) > 1:
-            members = "\n".join(f"{i}. [{r.model}, from {r.source}] {r.name}: {r.definition}"
+            members = "\n".join(f"{i}. [{r.model}, {r.size} item{'s' if r.size != 1 else ''}] {r.name}: {r.definition}"
                                  + (f" | use when: {'; '.join(r.include)}" if len(r.include) else "")
                                  for i, r in enumerate(rows_, 1))
             ans = editor.ask(system=EDIT_SYSTEM, user=f"Level: {lv}\nMembers:\n{members}", schema=EDIT_SCHEMA,
@@ -236,19 +324,22 @@ def run(ph):
                             split_rows.append({"level": lv, "candidate_group": gname, "cluster_a": labels[ra.key],
                                                "name_a": ra.name, "model_a": ra.model, "cluster_b": labels[rb.key],
                                                "name_b": rb.name, "model_b": rb.model,
-                                               "similarity": round(float(emb[ra.emb_idx] @ emb[rb.emb_idx]), 3)})
+                                               "similarity": round(pair_sim(ra.Index, rb.Index), 3)})
     df["cluster"] = df["key"].map(labels)
 
     # hierarchy by majority of members' parents
     parent_cluster = {}
     for lv in ("subcategory", "behavior"):
         for cl, g in df[df["level"] == lv].groupby("cluster"):
-            parent_cluster[cl] = majority([labels.get(p) for p in g["parent"]])
+            votes = Counter()                    # the parent where most of the members' items were placed
+            for pkey, size in zip(g["parent"], g["size"]):
+                votes[labels.get(pkey)] += max(int(size), 1)
+            parent_cluster[cl] = votes.most_common(1)[0][0] if votes else None
     behaviours = df[df["level"] == "behavior"]
     used_sub = set(parent_cluster[c] for c in behaviours["cluster"].unique())
     used_cat = set(parent_cluster[c] for c in used_sub)
 
-    registry_path = results_dir(ph.cfg) / "taxonomy_registry.json"
+    registry_path = results_dir(ph.cfg) / f"taxonomy_registry_{src}.json"     # stable IDs across reruns
     registry = read_json(registry_path, {})
     ids = {}
     for lv in T.LEVELS:
@@ -264,29 +355,35 @@ def run(ph):
         cid = ids[cl]
         text = texts_by_cluster[cl]
         idx = g["emb_idx"].to_numpy()
-        centroid = emb[idx].mean(axis=0)
+        wts_ = np.maximum(g["size"].to_numpy(dtype=float), 1.0)       # members weighted by the items they classify
+        centroid = (emb[idx] * wts_[:, None]).sum(axis=0)
         centroid /= np.linalg.norm(centroid) or 1
         sims = emb[idx] @ centroid
-        pair = [float(emb[a] @ emb[b]) for a, b in combinations(idx, 2)]
+        pair = [pair_sim(a, b) for a, b in combinations(list(g.index), 2)]
+        jac = [len(df.at[a, "item_set"] & df.at[b, "item_set"]) / max(len(df.at[a, "item_set"] | df.at[b, "item_set"]), 1)
+               for a, b in combinations(list(g.index), 2)]
         models = sorted(set(g["model"]))
         sources = sorted(set(g["source"]))
-        examples = list(dict.fromkeys(e for ex in g["examples"] for e in ex))
+        # every item the merged concept classifies (for a category or subcategory: every item under it)
+        examples = list(dict.fromkeys(i for st in g["item_set"] for i in sorted(st)))
         evidence = [e for ev in g["evidence"] for e in ev][:4]
         concepts[cid] = {"id": cid, "level": lv, "cluster": cl, "name": str(text["name"]).strip(),
                          "definition": str(text["definition"]).strip(), "include": text.get("include", []),
                          "exclude": text.get("exclude", []), "proposed_by": models, "n_models": len(models), "sources": sources,
                          "aliases": sorted(set(g["name"])), "examples": [{"item_id": e} for e in examples[:10]],
-                         "evidence": evidence, "n_items": int(g["n_items"].sum()),
+                         "items": examples, "evidence": evidence, "n_items": len(examples),
                          "edited_by_model": text["edited_by_model"], "same_meaning": True,
                          "candidate_group": text["candidate_group"], "group_split": text["group_split"],
                          "min_pair_similarity": round(min(pair), 3) if pair else None}
         for r, s_ in zip(g.itertuples(), sims):
-            alias_rows.append({"alias": r.name, "model": r.model, "level": lv, "id": cid,
+            alias_rows.append({"alias": r.name, "model": r.model, "level": lv, "id": cid, "items": int(r.size),
                                "canonical_name": concepts[cid]["name"], "similarity_to_centroid": round(float(s_), 3)})
         if pair:
             sim_rows.append({"id": cid, "level": lv, "members": len(g), "models": ", ".join(models),
                              "min_similarity": round(min(pair), 3), "mean_similarity": round(float(np.mean(pair)), 3),
-                             "canonical_name": concepts[cid]["name"], "member_names": " | ".join(g["name"])})
+                             "mean_item_overlap": round(float(np.mean(jac)), 3), "items": len(examples),
+                             "canonical_name": concepts[cid]["name"],
+                             "member_names": " | ".join(f"{n} ({k})" for n, k in zip(g["name"], g["size"]))})
 
     near = [{"level": r["level"], "id_a": ids.get(r["cluster_a"]), "name_a": r["name_a"], "model_a": r["model_a"],
              "id_b": ids.get(r["cluster_b"]), "name_b": r["name_b"], "model_b": r["model_b"], "similarity": r["similarity"]}
@@ -298,13 +395,14 @@ def run(ph):
     # ---------------------------------------------------------------- draft taxonomy (v0)
     draft = T.empty("v0-draft")
     draft["status"] = "draft (automatic merge, not reviewed)"
+    draft["describes"] = src                       # pharo | literature: one final taxonomy per source
     draft["source"] = {"phase": 4, "models": list(cands), "embedder": ph.cfg["llm"]["embedder"],
                        "thresholds": thr, "editor": ph.cfg["llm"]["editor"], "prompt_version": PROMPT_VERSION}
     cat_of_sub = {}
     for cl, cid in ids.items():
         c = concepts[cid]
         base = {k: c[k] for k in ("id", "name", "definition", "include", "exclude", "proposed_by", "sources", "aliases",
-                                  "examples", "evidence", "n_items", "edited_by_model", "same_meaning")}
+                                  "examples", "items", "evidence", "n_items", "edited_by_model", "same_meaning")}
         base["status"] = "active"
         if c["level"] == "category":
             draft["categories"].append(base)
@@ -317,7 +415,7 @@ def run(ph):
         if c["level"] == "behavior":
             sid = ids[parent_cluster[cl]]
             draft["behaviors"].append({**{k: c[k] for k in ("id", "name", "definition", "include", "exclude",
-                                                            "proposed_by", "sources", "aliases", "examples", "evidence",
+                                                            "proposed_by", "sources", "aliases", "examples", "items", "evidence",
                                                             "n_items", "edited_by_model", "same_meaning")},
                                        "subcategory_id": sid, "category_id": cat_of_sub[sid], "status": "active",
                                        "min_models_met": c["n_models"] >= int(ph.cfg["taxonomy"]["min_models_for_behavior"])})
@@ -429,13 +527,15 @@ def harmonize(ph, editor, draft: dict) -> dict:
     for c in cats:
         subs = [s for s in T.active(draft, "subcategory") if s["category_id"] == c["id"]]
         nb = sum(1 for b in T.active(draft, "behavior") if b["category_id"] == c["id"])
-        lines.append(f"{c['id']} {c['name']} ({nb} behaviours): {c['definition']} | subcategories: "
+        n_it = len({i for b in T.active(draft, "behavior") if b["category_id"] == c["id"] for i in (b.get("items") or [])})
+        lines.append(f"{c['id']} {c['name']} ({nb} behaviours, {n_it} items): {c['definition']} | subcategories: "
                      + "; ".join(s["name"] for s in subs))
     ans = editor.ask(system=HARM_SYSTEM, schema=CAT_SCHEMA, max_tokens=3000, prompt_version=PROMPT_VERSION,
                      phase=ph.key, item_id="harmonize-categories",
                      validator=_merge_validator({"C": {c["id"] for c in cats}}),
                      user=f"There are {len(cats)} categories; merge them into at most {maxc} broad categories of programming "
-                          "(merge a small or overlapping category into the broader one that contains it). A category that is "
+                          "(merge a small or overlapping category — few behaviours, few items — into the broader one that contains it; "
+                          "the survivor is the one holding more items). A category that is "
                           "a merge target is never itself merged. Rename a survivor when its name no longer covers what it "
                           "absorbed.\n\n" + "\n".join(lines))
     if ans.valid:
@@ -463,7 +563,8 @@ def harmonize(ph, editor, draft: dict) -> dict:
         text = []
         for sc in subs:
             text.append(f"{sc['id']} {sc['name']}: {sc['definition']}")
-            text += [f"    {b['id']} {b['name']}: {b['definition']}" for b in behs if b["subcategory_id"] == sc["id"]]
+            text += [f"    {b['id']} {b['name']} ({len(b.get('items') or [])} items): {b['definition']}"
+                     for b in behs if b["subcategory_id"] == sc["id"]]
         ans = editor.ask(system=HARM_SYSTEM, schema=WITHIN_SCHEMA, max_tokens=2500, prompt_version=PROMPT_VERSION,
                          phase=ph.key, item_id=f"harmonize-{c['id']}",
                          validator=_merge_validator({"S": {x["id"] for x in subs}, "B": {b["id"] for b in behs}}),
@@ -581,26 +682,41 @@ def guidelines(tax: dict) -> str:
     return "\n".join(out) + "\n"
 
 
-def figures(ph, tax, df, ids, models):
-    # taxonomy overview: categories with their subcategories and behaviours; ●○ = which share of the models proposed it
+def draw_taxonomy(tax: dict, models: list, path, title: str | None = None):
+    """The taxonomy figure: boxes per category, ●●○ per behaviour (one ● per annotator that proposed it) and, as a
+    thin bar with the number, the items classified there — under the ●●○ of a behaviour, on the right of a category
+    or a subcategory (distinct items; when a taxonomy has no item lists, the behaviours' counts are summed)."""
     cats, subs, behs = T.active(tax, "category"), T.active(tax, "subcategory"), T.active(tax, "behavior")
     blocks = []
+
+    def n_of(b):
+        return len(set(b.get("items") or [])) or int(b.get("n_items") or 0)
     for c in cats:
-        lines = []
+        lines, c_items, c_sum = [], set(), 0
         for s_ in [x for x in subs if x["category_id"] == c["id"]]:
-            bl = []
+            bl, s_items, s_sum = [], set(), 0
             for b in [b for b in behs if b["subcategory_id"] == s_["id"]]:
-                n = len(b.get("proposed_by", []))
-                src = b.get("sources") or []
-                tag = " [P+L]" if len(src) > 1 else " [P]" if src == ["pharo"] else " [L]" if src == ["literature"] else ""
-                bl.append({"marker": "●" * n + "○" * max(0, len(models) - n), "count": int(b.get("n_items") or 0),
-                           "label": f"{b['id']} {b['name']}{tag}"})
-            lines.append((f"{s_['id']} {s_['name']}", bl))
-        blocks.append((f"{c['id']} {c['name']}", lines))
-    F.taxonomy_tree(blocks, f"Shared taxonomy {tax['version']} ({tax['status']}): {len(cats)} categories, {len(subs)} "
-                    f"subcategories, {len(behs)} behaviours   ● = proposed by one model ({len(models)} models); bar = items; "
-                    "[P] Pharo, [L] literature, [P+L] both",
-                    ph.figure(f"taxonomy_{tax['version']}.png"))
+                k = len(b.get("proposed_by", []))
+                s_items |= set(b.get("items") or [])
+                s_sum += n_of(b)
+                bl.append({"marker": "●" * k + "○" * max(0, len(models) - k), "count": n_of(b),
+                           "label": f"{b['id']} {b['name']}"})
+            c_items |= s_items
+            c_sum += s_sum
+            lines.append(({"label": f"{s_['id']} {s_['name']}", "count": len(s_items) or s_sum}, bl))
+        blocks.append(({"label": f"{c['id']} {c['name']}", "count": len(c_items) or c_sum}, lines))
+    n_all = len({i for b in behs for i in (b.get("items") or [])})
+    src = SOURCES.get(tax.get("describes"))
+    F.taxonomy_tree(blocks, title or (f"Taxonomy {tax['version']}{' of the ' + src if src else ''} ({tax['status']}): "
+                                      f"{len(cats)} categories, {len(subs)} subcategories, {len(behs)} behaviours   "
+                                      f"● = proposed by one model ({len(models)} models)"),
+                    path, note="bar and number = items classified there by the annotators"
+                               + (f" ({n_all} distinct items)" if n_all else "")
+                               + " — under ●●○ for a behaviour, on the right for a category or a subcategory")
+
+
+def figures(ph, tax, df, ids, models):
+    draw_taxonomy(tax, models, ph.figure(f"taxonomy_{tax['version']}.png"))
 
     # model overlap: share of model A's behaviours that were merged with one of model B's
     b = df[(df["level"] == "behavior") & df["cluster"].isin(ids)]

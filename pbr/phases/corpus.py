@@ -39,6 +39,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .. import figures as F
+from .. import method_filters as MF
 from ..common import data_dir, resolve, write_csv, write_parquet
 
 FEATURES = ["has_conditional", "has_loop", "has_collection_iteration", "has_exception_handler", "has_exception_signal",
@@ -175,15 +176,17 @@ SCHEMA = pa.schema([
     *[(f, pa.bool_()) for f in FEATURES],
     ("source_hash", pa.string()), ("norm_hash", pa.string()), ("is_trivial", pa.bool_()), ("over_long", pa.bool_()),
     ("duplicate_of", pa.string()), ("duplicate_kind", pa.string()),
+    # AST facts for the method filters (pbr/method_filters.analyse): reasons, statements at every level, globals
+    ("ast_exclude", pa.string()), ("ast_review", pa.string()), ("n_statements_all", pa.int32()),
+    ("ast_globals", pa.list_(pa.string())),
 ])
 
 
 def apply_method_filters(ph, methods_path, mirrors: set):
-    """The decision of every method (pbr/method_filters.py): exclude / review / keep / keep_test, with reasons."""
-    from .. import method_filters as MF
-    cols = ["method_id", "repository", "class_name", "superclass", "selector", "source", "source_chars", "is_test",
-            "parse_status", "duplicate_of", "duplicate_kind", "n_lines", "n_message_sends", "n_blocks", "over_long",
-            "referenced_globals", "pragmas", "is_getter", "is_setter", "is_empty", "is_lazy_initializer"]
+    """The decision of every method (pbr/method_filters.py, decided on its AST and its class definition):
+    exclude / review / keep / keep_test, with every reason."""
+    cols = ["method_id", "repository", "class_name", "superclass", "is_test", "parse_status", "duplicate_of",
+            "duplicate_kind", "n_lines", "ast_exclude", "ast_review", "n_statements_all", "ast_globals"]
     df = pd.read_parquet(methods_path, columns=cols)
     gpath = resolve(ph.cfg["pharo"]["dir"]) / "globals.txt"
     image_globals = set(gpath.read_text().split()) if gpath.exists() else set()
@@ -194,7 +197,7 @@ def apply_method_filters(ph, methods_path, mirrors: set):
     ph.log.info(f"method filters on {len(df):,} methods ({len(image_globals):,} Pharo image globals known)")
     parts = []
     for i in ph.progress(range(0, len(df), 100_000), "method filters (batches of 100,000)", every_s=30):
-        parts.append(MF.classify(df.iloc[i:i + 100_000], ph.cfg, mirrors, image_globals, repo_classes, strip_comments))
+        parts.append(MF.classify(df.iloc[i:i + 100_000], ph.cfg, mirrors, image_globals, repo_classes))
     dec = pd.concat(parts, ignore_index=True)
     dec["rule"] = dec["reasons"].map(MF.first_rule)
     write_parquet(ph.path("method_filters.parquet"), dec)
@@ -290,6 +293,8 @@ def run(ph):
                 if dup_of:
                     dup_rows.append((mid, repo, dup_of, kind, norm_h))
                 line = int(r.get("line") or 0)
+                facts = MF.analyse(r.get("ast") if ok else None, MF.class_variables(cl, side), sel, src,
+                                   [p.get("selector") for p in r.get("pragmas") or [] if p.get("selector")])
                 rows.append({
                     "method_id": mid, "parser_method_key": r.get("method_key"), "repository": repo,
                     "commit_sha": commit or r.get("commit_sha"), "package": r.get("package"), "class_name": cls,
@@ -313,6 +318,8 @@ def run(ph):
                     **{k: bool(feats.get(k)) for k in FEATURES},
                     "source_hash": raw_h, "norm_hash": norm_h, "is_trivial": nstat <= triv,
                     "over_long": len(src) > max_chars, "duplicate_of": dup_of, "duplicate_kind": kind,
+                    "ast_exclude": "; ".join(facts["exclude"]), "ast_review": "; ".join(facts["review"]),
+                    "n_statements_all": facts["n_statements_all"], "ast_globals": facts["globals"],
                 })
             if rows:
                 writer.write_table(pa.Table.from_pylist(rows, schema=SCHEMA))

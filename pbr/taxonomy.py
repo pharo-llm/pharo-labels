@@ -222,7 +222,10 @@ def apply_decisions(tax: dict, decisions: list[dict], new_version: str, source: 
                 idx[tgt]["proposed_by"] = sorted(set(idx[tgt].get("proposed_by") or []) | set(c["proposed_by"]))
             if c.get("sources") is not None:          # ... and comes from every source of both
                 idx[tgt]["sources"] = sorted(set(idx[tgt].get("sources") or []) | set(c["sources"]))
-            if c.get("n_items") is not None:
+            if c.get("items") is not None:            # distinct items classified under either (an item can be in both)
+                idx[tgt]["items"] = list(dict.fromkeys((idx[tgt].get("items") or []) + c["items"]))
+                idx[tgt]["n_items"] = len(idx[tgt]["items"])
+            elif c.get("n_items") is not None:
                 idx[tgt]["n_items"] = (idx[tgt].get("n_items") or 0) + c["n_items"]
             retire(c, [tgt], f"merged into {tgt} by {who}")
             # children of a merged parent move to the survivor

@@ -37,7 +37,8 @@ _PHASES = [   # dependencies are written by name; numbers exist only here (renum
     (3, "corpus", "Pharo corpus preparation and method filters", ["corpus", "method_filters"], ["repositories"], []),
     (4, "sampling", "Representative sampling", ["sampling"], ["literature", "corpus"], []),
     (5, "discovery", "Taxonomy discovery (3 independent LLMs)", ["llm", "discovery"], ["literature", "corpus", "sampling"], []),
-    (6, "taxonomy", "Shared taxonomy construction", ["llm", "taxonomy"], ["discovery"], ["review/returned"]),
+    (6, "taxonomy", "Two final taxonomies (Pharo methods, benchmark tasks)", ["llm", "taxonomy"], ["discovery"],
+     ["pharo/review/returned", "literature/review/returned"]),
     (7, "annotation", "Independent structured annotation", ["llm", "annotation"],
      ["literature", "corpus", "sampling", "taxonomy"], []),
     (8, "validation", "AI agreement and expert validation", ["validation"], ["taxonomy", "annotation"],
@@ -51,6 +52,9 @@ _PHASES = [   # dependencies are written by name; numbers exist only here (renum
     (13, "evaluation", "Model evaluation", ["pharo", "evaluation"], ["taxonomy", "verification"], []),
 ]
 BY_KEY = {p[1]: p[0] for p in _PHASES}
+# Stage 1 (run by ./run.sh): from the repositories to the two final taxonomies. Stage 2 (phases 7-13: validation on
+# new samples, profile, coverage, benchmark, evaluation) still expects ONE shared taxonomy: to be adapted to the two.
+STAGE1_LAST = 6
 PHASES = [(n, k, t, sec, [BY_KEY[d] for d in deps], human) for n, k, t, sec, deps, human in _PHASES]
 BY_NUM = {p[0]: p for p in PHASES}
 

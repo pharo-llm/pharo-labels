@@ -4,6 +4,12 @@ Each annotator (three model families, config ``llm.annotators``), on its own and
 answers, builds TWO taxonomies: one from the sampled Pharo methods (phase 4: production and test methods that
 passed the method filters of phase 3), one from the sampled tasks of the existing benchmarks — six in all.
 
+0. **Sample and saturation.** Each annotator starts with a sample of 95% confidence (±5%, Cochran with finite
+   population correction: ~384 Pharo methods, ~354 benchmark problems; phase 4 draws the ordered pool) and goes on with
+   rounds of ``round_size`` new items until ``patience`` rounds in a row bring no new behaviour (derived from
+   ``min_share``: a behaviour of 0.5% prevalence would have appeared with 95% probability — the rule of the earlier
+   labelling study; inductive thematic saturation). A behaviour is new when a group of similar proposals (embedding
+   cosine ≥ ``novelty_threshold``) reaches ``min_support`` items. Curve: ``saturation.csv`` / ``saturation.png``.
 1. **Open proposals.** For each item (in batches of one source), up to ``max_behaviors_per_item`` programming
    behaviours at three levels — category › subcategory › concrete behaviour — with the evidence (a quote of the
    item). Behaviours are named in language-neutral terms so Python tasks and Pharo methods can be compared; the
@@ -17,8 +23,10 @@ Outputs, per model and source, ``<model>/<pharo|literature>/``:
   taxonomy.csv       one row per behaviour (category, subcategory, behaviour, definitions, rules, n_items, examples)
   items.csv          each item with the category / subcategory / behaviour this model gave it (one row per behaviour)
   categories.png     the categories by number of item-behaviour assignments
+  saturation.csv/png the saturation curve: items seen, new behaviours per round, rounds without a new one, status
   proposals.jsonl    every item's proposals;  raw_responses.jsonl   every raw answer (all attempts: results/cache/llm/)
-and discovery_summary.csv (one row per model and source); figures/: the six taxonomies compared.
+and discovery_summary.csv (one row per model and source), saturation_curves.csv; figures/: the six taxonomies
+compared, saturation_pharo.png and saturation_literature.png (the three annotators' curves).
 """
 from __future__ import annotations
 
@@ -29,9 +37,9 @@ import re
 import pandas as pd
 
 from .. import figures as F
-from ..common import read_jsonl, write_csv, write_json, write_jsonl
+from ..common import read_json, read_jsonl, write_csv, write_json, write_jsonl
 from ..items import load_items
-from ..llm import annotators, ledger_summary
+from ..llm import Client, annotators, ledger_summary
 
 PROMPT_VERSION = "discovery-v1"
 
@@ -100,9 +108,9 @@ def batches(items: pd.DataFrame, size: int) -> list[pd.DataFrame]:
     return out
 
 
-def propose(ph, client, batch_list, maxb, out_dir) -> list[dict]:
+def propose(ph, client, batch_list, maxb, label: str = "") -> tuple[list[dict], list[dict]]:
     rows, raws = [], []
-    for b in ph.progress(batch_list, f"{client.name}: proposal batches", every_s=60):
+    for b in ph.progress(batch_list, f"{client.name}{label}: proposal batches", every_s=120):
         local = [f"I{i + 1}" for i in range(len(b))]
         user = "Items:\n\n" + "\n\n".join(f"### {lid}\n{t}" for lid, t in zip(local, b["text"]))
         ans = client.ask(system=SYSTEM.replace("MAXB", str(maxb)), user=user, schema=item_schema(local, maxb),
@@ -117,9 +125,84 @@ def propose(ph, client, batch_list, maxb, out_dir) -> list[dict]:
                          "valid": bool(ans.valid and x), "behaviors": (x or {}).get("behaviors", []),
                          "insufficient_context": bool((x or {}).get("insufficient_context", False)),
                          "request_hash": ans.request_hash})
-    write_jsonl(out_dir / "proposals.jsonl", rows)
-    write_jsonl(out_dir / "raw_responses.jsonl", raws)
-    return rows
+    return rows, raws
+
+
+class Novelty:
+    """Behaviours an annotator has proposed so far for one source, grouped by embedding similarity. A proposal joins
+    the most similar group (cosine >= threshold) or starts a new one; a group counts as a behaviour once it reaches
+    ``min_support`` items. ``add`` returns how many behaviours became established in this round (the new ones)."""
+
+    def __init__(self, embedder, threshold: float, min_support: int):
+        self.embedder, self.threshold, self.min_support = embedder, threshold, min_support
+        self.vecs, self.counts, self.labels = [], [], []
+
+    def add(self, rows: list[dict]) -> int:
+        import numpy as np
+        texts = [f"clustering: {b['category']} › {b['subcategory']} › {b['behavior']}" for r in rows for b in r["behaviors"]]
+        if not texts:
+            return 0
+        new_est = 0
+        for v, t in zip(self.embedder.embed(texts), texts):
+            v = np.asarray(v)
+            if self.vecs:
+                sims = np.asarray(self.vecs) @ v
+                j = int(np.argmax(sims))
+                if sims[j] >= self.threshold:
+                    self.counts[j] += 1
+                    new_est += self.counts[j] == self.min_support
+                    continue
+            self.vecs.append(v)
+            self.counts.append(1)
+            self.labels.append(t.removeprefix("clustering: "))
+            new_est += self.min_support == 1
+        return new_est
+
+    @property
+    def established(self) -> int:
+        return sum(c >= self.min_support for c in self.counts)
+
+
+def saturation_loop(ph, client, src: str, pool, extras, plan: dict, maxb: int, embedder) -> tuple[list, list, list]:
+    """95% start sample, then rounds of new items until ``patience`` rounds in a row add no new behaviour."""
+    d = ph.cfg["discovery"]
+    nov = Novelty(embedder, float(d["novelty_threshold"]), int(d.get("min_support", 2)))
+    rows, raws, curve = [], [], []
+    start, R, patience, max_rounds = plan["initial"], plan["round_size"], plan["patience"], plan["max_rounds"]
+    streak, rnd, seen = 0, 0, 0
+    status = "pool exhausted before saturation"
+    while True:
+        if rnd == 0:
+            batch_items = pd.concat([pool.iloc[:start], extras])
+        else:
+            lo = start + (rnd - 1) * R
+            batch_items = pool.iloc[lo:lo + R]
+        if batch_items.empty:
+            break
+        r_rows, r_raws = propose(ph, client, batches(batch_items, int(d["batch_size"])), maxb, f"/{src} round {rnd}")
+        new = nov.add(r_rows)
+        rows += r_rows
+        raws += r_raws
+        seen += len(batch_items)
+        if rnd > 0:
+            streak = streak + 1 if new == 0 else 0
+        curve.append({"round": rnd, "items_added": len(batch_items), "items_seen": seen,
+                      "proposals": sum(len(r["behaviors"]) for r in r_rows), "new_behaviors": new,
+                      "behaviors": nov.established, "proposal_groups": len(nov.counts), "rounds_without_new": streak})
+        ph.log.info(f"{client.name}/{src} round {rnd}: +{len(batch_items)} items ({seen} seen), {new} new behaviour(s), "
+                    f"{nov.established} so far; {streak}/{patience} rounds without a new one")
+        if rnd > 0 and streak >= patience:
+            status = "saturated"
+            break
+        if rnd >= max_rounds:
+            status = f"stopped at max_rounds ({max_rounds}) before saturation"
+            ph.warn(f"{client.name}/{src}: not saturated after {max_rounds} rounds ({seen} items)")
+            break
+        rnd += 1
+    ph.log.info(f"{client.name}/{src}: {status} after {seen} items ({rnd} round(s) after the start sample)")
+    for c in curve:
+        c["status"] = status
+    return rows, raws, curve
 
 
 def consolidate(ph, client, rows, source: str, out_dir) -> dict:
@@ -210,7 +293,9 @@ def run(ph):
     by_source = {src: items[items["source"] == src] for src in SOURCES}
     ph.log.info(f"{len(items)} discovery items: " + ", ".join(f"{len(v)} {SOURCES[k]}" for k, v in by_source.items())
                 + "; each model builds one taxonomy per source, alone")
-    summary, all_rows, cands = [], [], {}
+    plans = read_json(ph.upstream("sampling", "sampling_design.json"))["discovery"]["plans"]
+    embedder = Client({"name": "embedder", **ph.cfg["llm"]["embedder"]}, ph.cfg)
+    summary, all_rows, cands, curves = [], [], {}, []
     for client in annotators(ph.cfg):
         info = client.info()
         ph.log.info(f"annotator {client.name}: {info.get('model')} ({info.get('family') or ''} "
@@ -219,7 +304,14 @@ def run(ph):
             if its.empty:
                 continue
             out = ph.path(client.name, src, "x").parent
-            rows = propose(ph, client, batches(its, int(ph.cfg["discovery"]["batch_size"])), maxb, out)
+            pool = its[its["order"].notna()].sort_values("order")
+            extras = its[its["order"].isna()]            # targeted and test methods: in the first round
+            rows, raws, curve = saturation_loop(ph, client, src, pool, extras, plans[src], maxb, embedder)
+            write_jsonl(out / "proposals.jsonl", rows)
+            write_jsonl(out / "raw_responses.jsonl", raws)
+            write_csv(out / "saturation.csv", pd.DataFrame(curve))
+            curves += [{**c, "model": client.name, "source": src} for c in curve]
+            saturation_figure(curve, f"{client.name}: saturation on the {SOURCES[src]}", out / "saturation.png", plans[src])
             bad = sum(not r["valid"] for r in rows)
             if bad:
                 ph.warn(f"{client.name}/{src}: {bad} items without a valid proposal (kept in proposals.jsonl, valid=false)")
@@ -232,7 +324,8 @@ def run(ph):
             ph.log.info(f"{client.name}/{src}: {nc} categories, {ns} subcategories, {nb} behaviours; "
                         f"{cand['assigned_share']:.0%} of proposals placed")
             summary.append({"model": client.name, "source": src, "model_id": info.get("model"), "digest": info.get("digest"),
-                            "items": len(rows), "invalid_items": bad,
+                            "items": len(rows), "invalid_items": bad, "saturation": curve[-1]["status"] if curve else None,
+                            "rounds": curve[-1]["round"] if curve else 0,
                             "insufficient_context": sum(r["insufficient_context"] for r in rows),
                             "proposals": sum(len(r["behaviors"]) for r in rows), "distinct_proposals": cand["n_proposals"],
                             "categories": nc, "subcategories": ns, "behaviors": nb,
@@ -242,6 +335,25 @@ def run(ph):
             model_figures(ph, client.name, src, cand, out)
     sdf = pd.DataFrame(summary)
     write_csv(ph.path("discovery_summary.csv"), sdf)
+    cdf = pd.DataFrame(curves)
+    write_csv(ph.path("saturation_curves.csv"), cdf)
+    for src in SOURCES:
+        sub = cdf[cdf["source"] == src] if len(cdf) else cdf
+        if len(sub):
+            fig, ax = F.plt.subplots(figsize=(8.5, 4.2))
+            for i, (mname, g) in enumerate(sub.groupby("model", sort=False)):
+                ax.plot(g["items_seen"], g["behaviors"], color=F.color(i), lw=2, marker="o", ms=3.5, label=mname)
+                ax.annotate(f"{g['status'].iloc[-1].split(' ')[0]}", (g["items_seen"].iloc[-1], g["behaviors"].iloc[-1]),
+                            xytext=(4, 0), textcoords="offset points", fontsize=7.5, color=F.INK_2, va="center")
+            ax.axvline(plans[src]["initial"], color=F.GRID, lw=1.2, ls="--")
+            ax.text(plans[src]["initial"], ax.get_ylim()[1] * 0.97, f"  95% start sample ({plans[src]['initial']})",
+                    fontsize=7.5, color=F.INK_2, va="top")
+            ax.set_xlabel("items seen")
+            ax.set_ylabel(f"behaviours (≥ {ph.cfg['discovery'].get('min_support', 2)} items)")
+            ax.set_title(f"Saturation on the {SOURCES[src]}: rounds of {plans[src]['round_size']} until "
+                         f"{plans[src]['patience']} rounds add nothing")
+            ax.legend()
+            F.save(fig, ph.figure(f"saturation_{src}.png"))
     for r in summary:
         ph.metric(f"{r['model']}_{r['source']}_behaviors", r["behaviors"])
     ph.metric("items", len(items))
@@ -275,6 +387,23 @@ def run(ph):
                        "Behaviours proposed per item", "items", ph.figure("proposals_per_item.png"))
 
 
+def saturation_figure(curve: list, title: str, path, plan: dict):
+    if not curve:
+        return
+    c = pd.DataFrame(curve)
+    fig, ax = F.plt.subplots(figsize=(7.5, 3.8))
+    ax.plot(c["items_seen"], c["behaviors"], color=F.SERIES[0], lw=2, marker="o", ms=4)
+    for r in c.itertuples():
+        if r.round > 0 and r.new_behaviors == 0:
+            ax.plot(r.items_seen, r.behaviors, "o", ms=7, mfc="none", mec=F.STATUS["good"])
+    ax.axvline(plan["initial"], color=F.GRID, lw=1.2, ls="--")
+    ax.set_xlabel("items seen")
+    ax.set_ylabel("behaviours established")
+    ax.set_title(title)
+    F.save(fig, path, note=f"{c['status'].iloc[-1]}; green ring = a round without a new behaviour "
+                           f"({plan['patience']} in a row = saturation); dashed = end of the 95% start sample")
+
+
 def model_figures(ph, name: str, src: str, cand: dict, out):
     """In <model>/<source>/: the taxonomy as a tree (taxonomy.png, with the number of items of each behaviour as a
     small bar) and its categories by size (categories.png)."""
@@ -282,9 +411,16 @@ def model_figures(ph, name: str, src: str, cand: dict, out):
         return
     blocks = []
     for c in cand["categories"]:
-        subs = [(s["name"], [{"label": b["name"], "count": b["n_items"]} for b in s["behaviors"]])
-                for s in c["subcategories"]]
-        blocks.append((c["name"], subs))
+        subs, c_items = [], set()
+        c_sum = 0
+        for s in c["subcategories"]:
+            s_items = {i for b in s["behaviors"] for i in (b.get("items") or [])}
+            s_sum = sum(int(b.get("n_items") or 0) for b in s["behaviors"])   # when there are no item lists
+            c_items |= s_items
+            c_sum += s_sum
+            subs.append(({"label": s["name"], "count": len(s_items) or s_sum},
+                         [{"label": b["name"], "count": b["n_items"]} for b in s["behaviors"]]))
+        blocks.append(({"label": c["name"], "count": len(c_items) or c_sum}, subs))
     left = cand.get("unassigned_proposals") or []
     if left:      # what the model proposed but did not place in its own hierarchy: shown, never hidden
         groups = {}
@@ -295,7 +431,7 @@ def model_figures(ph, name: str, src: str, cand: dict, out):
                        [(k, v) for k, v in sorted(groups.items())]))
     nb = sum(len(b) for _, subs in blocks[:len(cand["categories"])] for _, b in subs)
     info = cand.get("model_info") or {}
-    F.taxonomy_tree(blocks, f"{name} ({info.get('model', '')}) — taxonomy of the {SOURCES[src]} ({cand.get('n_items_shown', '?')} items): "
+    F.taxonomy_tree(blocks, f"{name} ({info.get('model', '')}) — taxonomy of the {SOURCES.get(src, src)} ({cand.get('n_items_shown', '?')} items): "
                     f"{len(cand['categories'])} categories, "
                     f"{sum(len(c['subcategories']) for c in cand['categories'])} subcategories, {nb} behaviours; "
                     f"{cand.get('assigned_share', 0):.0%} of its proposals placed",
@@ -304,5 +440,5 @@ def model_figures(ph, name: str, src: str, cand: dict, out):
                     last_apart=bool(left))
     cs = sorted(((c["name"], sum(b["n_items"] for s_ in c["subcategories"] for b in s_["behaviors"]))
                  for c in cand["categories"]), key=lambda t: -t[1])
-    F.barh([c for c, _ in cs], [n for _, n in cs], f"{name}: categories of its taxonomy of the {SOURCES[src]}",
+    F.barh([c for c, _ in cs], [n for _, n in cs], f"{name}: categories of its taxonomy of the {SOURCES.get(src, src)}",
            "item-behaviour assignments", out / "categories.png")
