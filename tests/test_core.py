@@ -8,6 +8,7 @@ import unittest
 import pandas as pd
 
 from pbr import agreement as A
+from pbr import oracle as O
 from pbr import taxonomy as T
 from pbr import workbook as W
 from pbr.phases.corpus import method_id, strip_comments
@@ -118,6 +119,64 @@ class CorpusTest(unittest.TestCase):
         g = pd.DataFrame({"repos": [10, 2, 5], "methods": [1000, 10, 90]}, index=["a", "b", "c"])
         self.assertEqual(sum(allocate(10, g, "equal").values()), 10)
         self.assertEqual(allocate(10, g, "proportional")["a"], 9)
+
+
+class OracleTest(unittest.TestCase):
+    contract = {"contract_id": "CONTRACT-B1", "properties": [{"id": "P1", "statement": "x"}, {"id": "P2", "statement": "y"}]}
+
+    def test_tests_renamed_and_tagged(self):
+        tests, rejected = O.oracle_tests([("gemma", {"tests": [
+            {"property": "p1", "lines": ["testLast", "\tself assert: 1 equals: 1"]},
+            {"property": "P9", "lines": ["testOther", "\tself assert: true"]},
+            {"property": "P2", "lines": ["foo: x", "\t^ x"]}]})], self.contract)
+        self.assertEqual([t["selector"] for t in tests], ["testOGemma1", "testOGemma2"])
+        self.assertEqual([t["property"] for t in tests], ["P1", "spec"], "unknown property ids count as statement tests")
+        self.assertTrue(tests[0]["source"].startswith("testOGemma1\n"))
+        self.assertEqual(len(rejected), 1)
+
+    def test_classify_and_align(self):
+        tests = [{"selector": "testOA1", "property": "P1"}, {"selector": "testOA2", "property": "P2"},
+                 {"selector": "testOA3", "property": "P2"}, {"selector": "testOA4", "property": "spec"}]
+        runs = [{"testOA1": {"outcome": "pass"}, "testOA2": {"outcome": "failure", "detail": "Got nil instead of 3."},
+                 "testOA3": {"outcome": "error", "detail": "Instance of PBRX did not understand #foo"},
+                 "testOA4": {"outcome": "pass"}}]
+        st = O.classify_tests(tests, {"stage": "done", "reference_runs": runs, "dropped": []}, "PBRX")
+        self.assertEqual(st["testOA2"]["status"], "counterexample")
+        self.assertEqual(st["testOA3"]["status"], "invalid", "a message the task does not have: the test is wrong")
+        st = O.confirm_tests(st, {"reference_runs": [{"testOA1": {"outcome": "pass"}, "testOA4": {"outcome": "pass"}}] * 3,
+                                  "all_stubbed_run": {"testOA1": {"outcome": "error"}, "testOA4": {"outcome": "pass"}}}, 3)
+        self.assertEqual(st["testOA4"]["status"], "vacuous")
+        al = O.alignment(self.contract, tests, st, [])
+        self.assertEqual(al["properties"], {"P1": "covered", "P2": "violated"})
+        self.assertEqual(al["status"], "violated")
+
+    def test_mutant_classes_and_bug_choice(self):
+        task = {"class": {"name": "PBRX"}, "target_methods": [{"selector": "a", "source": "a\n\t^ 1"}, {"selector": "b", "source": "b\n\t^ 2"}]}
+        mk = lambda i, st, src: {"selector": "a", "operator": f"Op{i}", "status": st, "source": src}  # noqa: E731
+        res = {"mutation": {"mutants": [mk(0, "killed", "a\r\t^ 0"), mk(1, "killed", "a\r\t^ nil"), mk(2, "survived", "a\r\t^ 1 + 0"),
+                                        mk(3, "survived", "a\r\t^ 3"), mk(4, "terminated", "a\r\t[ ] repeat"), mk(5, "killed", "a\r\t^ 9")]}}
+        ms = O.mutants_of(res, task, cap=60)
+        self.assertNotIn("\r", ms[0]["source"])
+        self.assertEqual([m["source"] for m in O.mutant_candidate(task, ms[0])["methods"]][1], "b\n\t^ 2",
+                         "the other target methods stay as in the reference")
+        fail = lambda *names: {"tests": {n: {"outcome": "failure"} for n in names} | {"testOk": {"outcome": "pass"}}, "errors": []}  # noqa: E731
+        task_c = {"m000": fail("t1", "t2"), "m001": fail("t1"), "m002": fail(), "m003": fail(), "m005": fail()}
+        orc_c = {"m000": fail("testOA1"), "m001": fail("testOA1"), "m002": fail(), "m003": fail("testOA1"), "m005": fail()}
+        rec = {r["mutant_id"]: r for r in O.classify_mutants(ms, task_c, orc_c, ["testOA1"], {"testOA1": {"property": "P1"}})}
+        self.assertEqual({k: v["classification"] for k, v in rec.items()},
+                         {"m000": "killed", "m001": "killed", "m002": "possibly_equivalent", "m003": "survived_detectable",
+                          "m004": "terminated", "m005": "unstable"})
+        s = O.mutation_summary(list(rec.values()))
+        self.assertEqual((s["valid_mutants"], s["killed_mutants"]), (4, 2))
+        self.assertEqual((s["mutation_score_lower"], s["mutation_score_upper"]), (0.5, 0.667))
+        self.assertEqual(O.pick_bug(list(rec.values()))["mutant_id"], "m001", "the fault the fewest tests see")
+
+    def test_audit_sample_stratified(self):
+        tasks = [{"task_id": f"t{i}", "category_id": "C1" if i < 8 else "C2"} for i in range(10)]
+        s = O.audit_sample(tasks, 3, seed=1)
+        self.assertEqual(len(s), 3)
+        self.assertTrue(any(t in s for t in ("t8", "t9")), "every category is represented")
+        self.assertEqual(s, O.audit_sample(tasks, 3, seed=1))
 
 
 class WorkbookTest(unittest.TestCase):

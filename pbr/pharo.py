@@ -100,8 +100,11 @@ def split_methods(text: str) -> list[str]:
     return [o for o in out if o]
 
 
-def job(task: dict, *, mutation: bool, candidates: list | None = None, repeat: int = 3, time_limit: int = 10) -> dict:
-    """The harness job for a task (PharoBench format: class, test class, target / context methods, tests)."""
+def job(task: dict, *, mutation: bool, candidates: list | None = None, repeat: int = 3, time_limit: int = 10,
+        lenient_tests: bool = False) -> dict:
+    """The harness job for a task (PharoBench format: class, test class, target / context methods, tests).
+    ``lenient_tests``: test methods that do not parse, compile or resolve are dropped (listed in the result's
+    ``dropped``) instead of stopping the job — for tests written by an independent model."""
     cls, tcls = task["class"], task["test_class"]
     classes = [{"name": cls["name"], "superclass": cls.get("superclass", "Object"),
                 "instance_variables": cls.get("instance_variables", []), "class_variables": [],
@@ -117,6 +120,8 @@ def job(task: dict, *, mutation: bool, candidates: list | None = None, repeat: i
            "repeat": repeat, "test_time_limit_seconds": time_limit, "mutation": mutation}
     if candidates:
         out["candidates"] = candidates
+    if lenient_tests:
+        out["lenient_roles"] = ["test"]
     return out
 
 

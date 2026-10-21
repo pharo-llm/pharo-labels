@@ -167,6 +167,24 @@ validation), agreement and blinded expert validation, corpus-wide profile, liter
 construction, execution in an isolated Pharo image, model evaluation — but it still expects one shared taxonomy.
 `./run.sh` stops after phase 6; asking for a later phase says so.
 
+**How a benchmark task is validated (phases 11–12)** — an automatic, five-level validation whose claims stay within
+what each check can establish:
+
+| Level | Check | What it establishes |
+|---|---|---|
+| 1 Executability | installs in a clean Pharo 13 image, hermetic, reference passes its tests 3× (once reversed), fail-to-pass | the task runs |
+| 2 Independent oracle | a **behaviour contract** per behaviour, written before any task from the taxonomy only (phase 11); oracle models of other families than the author, seeing only the solver's view + the contract, write their own tests; a test failing on the reference is a *counterexample* | the reference agrees with tests it never shaped |
+| 3 Valid mutants | every MuTalk mutant re-run in a clean image on both test suites: killed, survived (test gap), possibly equivalent, unstable, terminated, invalid; score bounds; the bug-repair mutant compiles, is killed reproducibly and violates the contract | the tests detect injected faults |
+| 4 Behaviour alignment | each contract property covered / violated / untested by the independent tests | the task tests the intended behaviour |
+| 5 Audit | experts review every quarantined task + a stratified random sample of the auto-verified ones | the residual error of levels 1–4 (Wilson 95 %) |
+
+A task failing level 2 or 4 is *quarantined*, never evaluated unless an expert accepts it. Every task gets a report
+(`12_verification/validation_reports/<task_id>.json`), every mutant a record (`mutants.jsonl`: original and mutated
+code, operator, distinguishing tests, failing assertions). The tasks are new (from Pharo seeds), validated against
+their own contracts: no equivalence to a literature task is claimed. Settings: `config.yaml` → `benchmark`
+(`contract_author`, `oracles`, `min_oracle_tests`, `min_property_coverage`, `max_mutants_rechecked`), profile
+`benchmark_audit`.
+
 ## Results
 
 ```
@@ -206,6 +224,8 @@ imports); `./run.sh status` marks it *stale*. Raw LLM answers (every attempt) ar
 | `pbr/llm.py` | LLM engine: structured output and validation, retries, cache of raw answers, cost ledger |
 | `pbr/taxonomy.py` | taxonomy manager: stable IDs, validation, versions, revisions |
 | `pbr/agreement.py` | statistics: sample size, saturation, agreement, weighted estimates |
+| `pbr/pharo.py`, `pharo/harness.st` | isolated Pharo runner and harness (install, tests, stubs, candidates, MuTalk) |
+| `pbr/oracle.py` | independent validation: behaviour contracts, independent tests, alignment, mutant validity, audit sample |
 | `pbr/figures.py`, `pbr/diagram.py` | figure style, taxonomy trees, the pipeline figure |
 | `tests/` | `.venv/bin/python -m unittest discover -s tests` |
 

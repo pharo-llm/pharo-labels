@@ -257,7 +257,10 @@ category and subcategory counts here are sums; a new run counts distinct items.)
 With the two final taxonomies, the next stage compares them and builds the benchmark: classify NEW samples with
 each taxonomy (its validation), measure agreement between annotators and with experts, estimate how often each
 behaviour occurs in Pharo, map the two taxonomies onto each other (what Pharo does that benchmarks do not test, and
-the reverse), then write, verify and evaluate executable Pharo tasks. That code (phases 7–13) exists but still
+the reverse), then write, verify and evaluate executable Pharo tasks. A task is verified in five levels (README,
+"How a benchmark task is validated"): it executes; it agrees with independent tests that models of other families
+wrote from a behaviour contract without seeing the reference; its tests kill valid mutants; it satisfies every
+property of its contract; and an expert audit of a random sample measures what the automatic checks miss. That code (phases 7–13) exists but still
 expects a single shared taxonomy; `./run.sh` stops after phase 6.
 
 ## Where everything is

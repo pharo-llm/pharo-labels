@@ -48,7 +48,8 @@ _PHASES = [   # dependencies are written by name; numbers exist only here (renum
     (10, "coverage", "Literature versus Pharo comparison", ["coverage"], ["annotation", "validation", "profile"], []),
     (11, "benchmark", "Pharo benchmark construction", ["benchmark"], ["corpus", "taxonomy", "annotation", "coverage"],
      ["selected_behaviors.csv"]),
-    (12, "verification", "Benchmark validation (execution + experts)", ["pharo", "benchmark"], ["benchmark"], ["expert/returned"]),
+    (12, "verification", "Benchmark validation (execution, independent oracle, mutants, alignment, audit)", ["llm", "pharo", "benchmark"],
+     ["benchmark"], ["expert/returned"]),
     (13, "evaluation", "Model evaluation", ["pharo", "evaluation"], ["taxonomy", "verification"], []),
 ]
 BY_KEY = {p[1]: p[0] for p in _PHASES}

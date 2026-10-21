@@ -3,18 +3,27 @@
  Reads a job (JSON), installs the task's classes in this image, runs the checks the job
  asks for and writes one JSON result to job.out. See src/pharo_bench/gates.py."
 | job out result classes methods byClass compiled problems defineClass compileMethod testClass testSelectors
-  runTest runAll targets stubSource installed restore json timeLimit repeat known analysis facts ston |
+  runTest runAll targets stubSource installed restore json timeLimit repeat known analysis facts ston
+  lenient dropped drop toDrop |
 job := STONJSON fromString: (Smalltalk os environment at: 'PB_JOB') asFileReference contents.
 out := (job at: 'out') asFileReference.
 result := Dictionary new.
 problems := OrderedCollection new.
-json := [ result at: 'problems' put: problems asArray. out ensureDelete. out writeStreamDo: [ :s | s nextPutAll: (STONJSON toStringPretty: result) ] ].
+dropped := OrderedCollection new.
+json := [ result at: 'problems' put: problems asArray; at: 'dropped' put: dropped asArray. out ensureDelete. out writeStreamDo: [ :s | s nextPutAll: (STONJSON toStringPretty: result) ] ].
 result at: 'image' put: SystemVersion current asString; at: 'vm' put: Smalltalk vm version asString.
 [
 classes := job at: 'classes'.
 methods := job at: 'methods'.
 timeLimit := (job at: 'test_time_limit_seconds' ifAbsent: [ 10 ]) seconds.
 repeat := job at: 'repeat' ifAbsent: [ 3 ].
+"methods of these roles (e.g. tests written by an independent model) are left out when they do not
+ parse, compile or resolve, and listed in 'dropped', instead of stopping the job"
+lenient := (job at: 'lenient_roles' ifAbsent: [ #() ]) asSet.
+drop := [ :m :kind :detail |
+	m at: 'dropped' put: true.
+	dropped add: { 'kind' -> kind. 'class' -> (m at: 'class'). 'selector' -> (m at: 'selector' ifAbsent: [ '' ]).
+		'detail' -> detail asString. 'source' -> (m at: 'source') } asDictionary ].
 
 "--- 1. preflight: names free, superclasses known, every method parses -----------------"
 known := (classes collect: [ :c | c at: 'name' ]) asSet.
@@ -26,8 +35,11 @@ classes do: [ :c |
 methods do: [ :m |
 	[ m at: 'selector' put: (RBParser parseMethod: (m at: 'source')) selector asString ]
 		on: Error do: [ :e |
-			problems add: { 'kind' -> 'syntax_error'. 'class' -> (m at: 'class'). 'detail' -> e messageText asString.
-				'source' -> (m at: 'source') } asDictionary ] ].
+			(lenient includes: (m at: 'role' ifAbsent: [ '' ]))
+				ifTrue: [ drop value: m value: 'syntax_error' value: e messageText ]
+				ifFalse: [ problems add: { 'kind' -> 'syntax_error'. 'class' -> (m at: 'class'). 'detail' -> e messageText asString.
+					'source' -> (m at: 'source') } asDictionary ] ] ].
+methods := methods reject: [ :m | m includesKey: 'dropped' ].
 (job at: 'candidates' ifAbsent: [ #() ]) do: [ :cand | (cand at: 'methods') do: [ :m |
 	[ m at: 'selector' put: (RBParser parseMethod: (m at: 'source')) selector asString ]
 		on: Error do: [ :e | m at: 'syntax_error' put: e messageText asString ] ] ].
@@ -59,11 +71,14 @@ compiled := OrderedCollection new.
 methods do: [ :m |
 	[ compiled add: m -> (compileMethod value: m) ]
 		on: Error do: [ :e |
-			problems add: { 'kind' -> 'compile_error'. 'class' -> (m at: 'class'). 'selector' -> (m at: 'selector').
-				'detail' -> e description asString } asDictionary ] ].
+			(lenient includes: (m at: 'role' ifAbsent: [ '' ]))
+				ifTrue: [ drop value: m value: 'compile_error' value: e description ]
+				ifFalse: [ problems add: { 'kind' -> 'compile_error'. 'class' -> (m at: 'class'). 'selector' -> (m at: 'selector').
+					'detail' -> e description asString } asDictionary ] ] ].
 
 "--- 3. static facts: undeclared names, selectors nobody implements, what the code touches"
 facts := OrderedCollection new.
+toDrop := OrderedCollection new.
 compiled do: [ :assoc | | cm ast undeclared sends unimplemented globals |
 	cm := assoc value.
 	ast := cm ast.
@@ -73,6 +88,12 @@ compiled do: [ :assoc | | cm ast undeclared sends unimplemented globals |
 	unimplemented := sends asSet select: [ :s | (SystemNavigation default allImplementorsOf: s asSymbol) isEmpty ].
 	globals := (ast allChildren select: [ :n | n isVariable and: [ n variable isGlobalVariable ] ])
 		collect: [ :n | n name asString ].
+	((undeclared notEmpty or: [ unimplemented notEmpty ]) and: [ lenient includes: (assoc key at: 'role' ifAbsent: [ '' ]) ])
+		ifTrue: [
+			toDrop add: assoc.
+			drop value: assoc key value: (undeclared isEmpty ifTrue: [ 'unimplemented_selector' ] ifFalse: [ 'undeclared_variable' ])
+				value: (' ' join: (undeclared asSet asArray , unimplemented asArray)) ]
+		ifFalse: [
 	undeclared asSet do: [ :n |
 		problems add: { 'kind' -> 'undeclared_variable'. 'class' -> (assoc key at: 'class').
 			'selector' -> (assoc key at: 'selector'). 'detail' -> n } asDictionary ].
@@ -81,7 +102,9 @@ compiled do: [ :assoc | | cm ast undeclared sends unimplemented globals |
 			'selector' -> (assoc key at: 'selector'). 'detail' -> s } asDictionary ].
 	facts add: { 'class' -> (assoc key at: 'class'). 'selector' -> (assoc key at: 'selector').
 		'role' -> (assoc key at: 'role' ifAbsent: [ 'context' ]).
-		'sends' -> sends asSet asSortedCollection asArray. 'globals' -> globals asSet asSortedCollection asArray } asDictionary ].
+		'sends' -> sends asSet asSortedCollection asArray. 'globals' -> globals asSet asSortedCollection asArray } asDictionary ] ].
+toDrop do: [ :assoc | assoc value methodClass removeSelector: assoc value selector ].
+compiled removeAll: toDrop.
 result at: 'facts' put: facts asArray.
 problems ifNotEmpty: [ result at: 'stage' put: 'install'. json value. ^ Smalltalk exitSuccess ].
 
