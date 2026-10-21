@@ -34,6 +34,7 @@ from .. import taxonomy as T
 from .. import workbook as W
 from ..common import now_iso, read_json, write_csv, write_json, write_jsonl, write_text
 from ..items import load_items
+from .annotation import base_taxonomy_path
 
 ID_RE = re.compile(r"^\s*(B\d{3,}|UNKNOWN|INSUFFICIENT)\b", re.I)
 LEVELS = ["full", "partial", "none", "insufficient", "unknown", "missing"]
@@ -381,7 +382,7 @@ def import_adjudication(ph, tax) -> tuple[dict, list, list]:
 # ---------------------------------------------------------------------------------------------- phase
 def run(ph):
     version = ph.cfg["taxonomy"].get("version", "v1")
-    tax = T.load(ph.upstream("taxonomy", f"taxonomy_{version}.json"))
+    tax = T.load(base_taxonomy_path(ph))
     ann = pd.read_parquet(ph.upstream("annotation", "annotations_validated.parquet"))
     models = [a["name"] for a in ph.cfg["llm"]["annotators"]]
     items = item_table(ann, models)

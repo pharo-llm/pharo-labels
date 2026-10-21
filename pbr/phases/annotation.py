@@ -158,8 +158,16 @@ def latest_raw(raw: list[dict], tax: dict) -> list[dict]:
     return list(last.values())
 
 
+def base_taxonomy_path(ph):
+    """The phase-6 taxonomy stage 2 works with: ``taxonomy.stage2_source`` (pharo | literature) of the two final
+    taxonomies. Both sources (Pharo methods and benchmark tasks) are classified with it in phase 7, so the coverage
+    of phase 10 compares them on the same behaviour IDs."""
+    return ph.upstream("taxonomy", ph.cfg["taxonomy"].get("stage2_source", "pharo"),
+                       f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json")
+
+
 def run(ph):
-    tax = T.load(ph.upstream("taxonomy", f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json"))
+    tax = T.load(base_taxonomy_path(ph))
     if ph.upstream_state("taxonomy").get("status") == "provisional":
         ph.mark_provisional(f"annotations use taxonomy {tax['version']} that experts have not reviewed yet")
     items = load_items(ph, "annotation")

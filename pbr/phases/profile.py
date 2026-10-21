@@ -36,7 +36,7 @@ from .. import taxonomy as T
 from ..common import read_json, read_jsonl, write_csv, write_parquet
 from ..items import load_items
 from ..llm import Client, ledger_summary
-from .annotation import classify, flatten, latest_raw
+from .annotation import base_taxonomy_path, classify, flatten, latest_raw
 
 
 def latest_taxonomy(ph) -> dict:
@@ -44,7 +44,7 @@ def latest_taxonomy(ph) -> dict:
     versions = sorted(d7.glob("taxonomy_v*.json"), key=lambda p: int(re.sub(r"\D", "", p.stem) or 0))
     if versions:
         return T.load(versions[-1])
-    return T.load(ph.upstream("taxonomy", f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json"))
+    return T.load(base_taxonomy_path(ph))
 
 
 def choose_models(ph) -> tuple[list[str], str]:

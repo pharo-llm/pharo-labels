@@ -31,7 +31,7 @@ from .. import agreement as A
 from .. import figures as F
 from .. import taxonomy as T
 from ..common import read_json, write_csv
-from .profile import latest_taxonomy
+from .profile import base_taxonomy_path, latest_taxonomy
 
 
 def literature_labels(ph, tax) -> pd.DataFrame:
@@ -63,7 +63,7 @@ def run(ph):
     if tax["version"] != v6:
         ph.warn(f"phase 9 uses taxonomy {tax['version']} while phases 7–8 used {v6}: literature labels are translated "
                 f"explicitly with the version map (taxonomy.translate), never rewritten")
-    tax6 = T.load(ph.upstream("taxonomy", f"taxonomy_{v6}.json"))
+    tax6 = T.load(base_taxonomy_path(ph))
     for u in ("annotation", "validation", "profile"):
         if ph.upstream_state(u).get("status") == "provisional":
             ph.mark_provisional(f"phase {u} is provisional (expert input pending)")

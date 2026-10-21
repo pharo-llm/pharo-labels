@@ -53,8 +53,8 @@ _PHASES = [   # dependencies are written by name; numbers exist only here (renum
     (13, "evaluation", "Model evaluation", ["pharo", "evaluation"], ["taxonomy", "verification"], []),
 ]
 BY_KEY = {p[1]: p[0] for p in _PHASES}
-# Stage 1 (run by ./run.sh): from the repositories to the two final taxonomies. Stage 2 (phases 7-13: validation on
-# new samples, profile, coverage, benchmark, evaluation) still expects ONE shared taxonomy: to be adapted to the two.
+# Stage 1 (phases 1-6): from the repositories to the two final taxonomies. Stage 2 (phases 7-13) works with one of
+# them, taxonomy.stage2_source (default: the Pharo taxonomy), with which it classifies both sources.
 STAGE1_LAST = 6
 PHASES = [(n, k, t, sec, [BY_KEY[d] for d in deps], human) for n, k, t, sec, deps, human in _PHASES]
 BY_NUM = {p[0]: p for p in PHASES}

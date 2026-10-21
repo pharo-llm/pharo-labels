@@ -40,7 +40,7 @@ profiles:
     expert_items: 6
     pharo_profile: 10
     pharo_profile_tests: 0
-    benchmark_candidates: 2
+    benchmark_candidates: 3
     benchmark_audit: 2
   full:
     pharo_discovery_targeted: 60
@@ -202,6 +202,8 @@ taxonomy:
   min_models_for_behavior: 1               # a behaviour proposed by fewer models is kept but marked
   require_review: false                    # true = phase 6 stops until results/06_taxonomy/review/returned/ has a decision file
   version: v1
+  stage2_source: pharo                     # stage 2 (phases 7-13) classifies BOTH sources with this final taxonomy
+                                           # (pharo | literature): coverage = which of its behaviours the benchmarks test
 
 # ------------------------------------------------------------------ phase 7: annotation
 annotation:

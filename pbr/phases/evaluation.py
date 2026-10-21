@@ -33,7 +33,7 @@ from .. import pharo as P
 from .. import taxonomy as T
 from ..common import ROOT, now_iso, read_jsonl, stable_hash, write_csv, write_json, write_jsonl, write_text
 from ..llm import Client, LLMError, ledger_summary
-from .profile import latest_taxonomy
+from .profile import base_taxonomy_path, latest_taxonomy
 
 PROMPT_VERSION = "evaluation-v1"
 SYSTEM = "You are an expert Pharo (Smalltalk) developer. Answer with the requested method source(s) only, in a ```smalltalk block."
@@ -194,7 +194,7 @@ def release(ph, tax, df, sdf, repro):
     rel.mkdir(parents=True)
     bv = ph.upstream("verification", "benchmark_verified")
     shutil.copytree(bv, rel / "benchmark")
-    t5 = sorted(ph.upstream("validation").glob("taxonomy_v*.json")) or [ph.upstream("taxonomy", f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json")]
+    t5 = sorted(ph.upstream("validation").glob("taxonomy_v*.json")) or [base_taxonomy_path(ph)]
     shutil.copy2(t5[-1], rel / t5[-1].name)
     shutil.copy2(ph.upstream("coverage", "coverage_matrix.csv"), rel / "coverage_matrix.csv")
     df.to_csv(rel / "evaluation_results.csv", index=False)

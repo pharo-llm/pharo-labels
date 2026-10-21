@@ -2,10 +2,10 @@
 # Pharo benchmark research — stage 1: from the 1,585 Pharo repositories and the existing code benchmarks to TWO
 # final taxonomies of programming behaviours (Pharo methods, benchmark tasks). Every phase writes results/NN_<phase>/.
 #
-#   ./run.sh                    setup, then phases 1-6; a phase already done with the same inputs is skipped,
+#   ./run.sh                    setup, then phases 1-13; a phase already done with the same inputs is skipped,
 #                               an interrupted phase resumes item by item (LLM answers are cached)
 #   ./run.sh 5                  one phase (re-run)          ./run.sh 3-6      a range
-#   ./run.sh from 4             phases 4 to 6               ./run.sh discovery    by name
+#   ./run.sh from 4             phases 4 to 13              ./run.sh discovery    by name
 #   ./run.sh setup              only the dependencies (done automatically before any phase; SKIP_SETUP=1 skips)
 #   ./run.sh status             what is done, provisional, waiting, failed or stale
 #   ./run.sh logs [5] [-n 100]  the logs (all phases, or one), readable
@@ -20,7 +20,8 @@
 #    5 discovery     3 annotators, alone, per source: category > subcategory > behaviour until saturation
 #                    -> 6 taxonomies (05_discovery/<annotator>/<pharo|literature>/)
 #    6 taxonomy      per source, the 3 taxonomies merged (embeddings + editor) -> the 2 final taxonomies
-#   (7-13: stage 2 — validation on new samples, profile, coverage, benchmark, evaluation — not yet adapted)
+#    7-13 stage 2, with the Pharo taxonomy (taxonomy.stage2_source): annotation of new samples, agreement +
+#                 experts, profile, coverage, benchmark construction, validation, evaluation
 #
 # Results: results/SUMMARY.md (all phases, key numbers, figures). Expert files: results/06_taxonomy/review/,
 # results/08_validation/expert/, results/12_verification/expert/ (completed files go in their returned/ folder).
@@ -71,6 +72,6 @@ fi
 case "${1:-}" in
   ""|run)                         shift || true; exec .venv/bin/python -m pbr run "$@" ;;
   status|logs|cost|reset|simulate-expert) exec .venv/bin/python -m pbr "$@" ;;
-  help|-h|--help)                 sed -n '2,27p' "$0" ;;
+  help|-h|--help)                 sed -n '2,28p' "$0" ;;
   *)                              exec .venv/bin/python -m pbr run "$@" ;;
 esac
