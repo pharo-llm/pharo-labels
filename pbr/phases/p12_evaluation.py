@@ -1,8 +1,10 @@
 """Phase 12 — Model evaluation.
 
-Every coding model of ``evaluation.models`` receives the same prompt for every verified task variant
+Every chat model of ``evaluation.models`` receives the same prompt for every verified task variant
 (code generation, code completion, bug repair) under the same conditions (temperature 0, fixed seed,
-``evaluation.max_tokens``). Its answer is parsed into method sources and run, as an untrusted candidate, in
+``evaluation.max_tokens``). A pre-trained model (``mode: completion``, the Pharo PT model) is not asked
+instructions: it continues Pharo source (specification as a comment, class, context methods, the method's
+message pattern or given beginning, the buggy version in a comment for bug repair). Its answer is parsed into method sources and run, as an untrusted candidate, in
 the isolated image (one image per task, all models' candidates in it; resource limits, no network). The
 ``reference`` model submits the reference solutions: it must score 100% (a check of the whole path).
 
@@ -37,6 +39,31 @@ from .p08_profile import latest_taxonomy
 
 PROMPT_VERSION = "evaluation-v1"
 SYSTEM = "You are an expert Pharo (Smalltalk) developer. Answer with the requested method source(s) only, in a ```smalltalk block."
+
+
+def completion_prompts(t: dict) -> list[tuple[str, str]]:
+    """For a pre-trained (completion) model: one (head, prompt) per target method. The prompt is Pharo source
+    the model continues: the specification as a comment, the class and its context methods, then the method
+    to write (its message pattern, or the given beginning for code completion). Candidate = head + continuation."""
+    task = t["task"]
+    cls = task["class"]
+    q = lambda x: str(x).replace('"', "'")                                         # noqa: E731
+    lines = [f'"{q(t["statement"])}"', "",
+             f"Object subclass: #{cls['name']}", f"\tinstanceVariableNames: '{' '.join(cls.get('instance_variables', []))}'", ""]
+    for m in task.get("context_methods") or []:
+        lines += [f"{cls['name']} >> {m['source']}", ""]
+    base = "\n".join(lines)
+    out = []
+    for i, m in enumerate(task["target_methods"]):
+        if t["task_type"] == "code_completion" and i == 0:
+            head = t["given_prefix"].rstrip() + "\n"
+        else:
+            head = m["signature"] + "\n"
+        pre = base
+        if t["task_type"] == "bug_repair" and i == 0:
+            pre += f'"The implementation below has a bug: its tests fail.\n{q(t["buggy_source"])}\nThe corrected implementation:"\n\n'
+        out.append((head, pre + f"{cls['name']} >> {head}"))
+    return out
 
 
 def error_kind(c: dict | None) -> str:
@@ -85,6 +112,19 @@ def run(ph):
             if cl.provider == "reference":
                 srcs = t["reference"]
                 usage, valid = {}, True
+            elif cl.spec.get("mode") == "completion":
+                srcs, usage, valid = [], {"latency_s": 0.0, "output_tokens": 0}, True
+                stop = [f"\n{t['task']['class']['name']} >>", f"\n{t['task']['class']['name']} class >>", "\n\n\n", "```"]
+                try:
+                    for head, prompt in completion_prompts(t):
+                        ans = cl.ask(system="", user=prompt, schema=None, max_tokens=int(ecfg["max_tokens"]), stop=stop,
+                                     prompt_version=PROMPT_VERSION + "-completion", phase="12_evaluation", item_id=t["task_id"])
+                        srcs.append((head + ans.text).rstrip())
+                        usage["latency_s"] += ans.usage.get("latency_s") or 0
+                        usage["output_tokens"] += ans.usage.get("output_tokens") or 0
+                except LLMError as e:
+                    ph.warn(f"{cl.name} on {t['task_id']}: no answer ({str(e)[:120]}) — counted as a failure")
+                    srcs, valid = [], False
             else:
                 try:
                     ans = cl.ask(system=SYSTEM, user=t["prompt"], schema=None, max_tokens=int(ecfg["max_tokens"]),

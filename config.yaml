@@ -6,7 +6,7 @@
 
 project:
   results_dir: results                     # one sub-folder per phase: results/01_literature ... results/12_evaluation
-  data_dir: ../data                        # shared downloads (existing benchmarks, Pharo corpus snapshot)
+  data_dir: data                           # downloads and built tools (git-ignored; ./run.sh setup fills it)
   seed: 42
 
 # ------------------------------------------------------------------ sample sizes (per profile)
@@ -34,7 +34,7 @@ profiles:
 
 # ------------------------------------------------------------------ phase 1: literature
 literature:
-  loader: ../labeling-existing-benchmarks/benchmarks.py   # pinned sources + download, shared with the other studies
+  loader: pbr/benchmarks.py                # pinned sources of every benchmark + their download
   # Benchmark-level evaluation task type (the second, independent classification of §2). It is a property
   # of how a benchmark is built, so it is set here, once, with the reason, and not guessed by a model.
   task_types:
@@ -54,12 +54,26 @@ literature:
   # SWE-bench Verified ⊂ SWE-bench; BigCodeBench-Instruct = Complete reworded; LCB test-output / execution reuse
   # LCB problems: kept in the tables, but the behaviour of a problem is counted once (dedup key).
 
+# ------------------------------------------------------------------ setup (./run.sh does it before any phase)
+setup:
+  # Models that are not in the Ollama library: a LoRA adapter on Hugging Face, converted to GGUF with llama.cpp
+  # and registered in Ollama on top of its base model (Modelfile ADAPTER). Built once; skipped when present.
+  custom_models:
+    - ollama_name: "pharo-llm/Qwen2.5-Coder-PT:7b"
+      hf_repo: pharo-llm/Qwen2.5-Coder-7B-PT
+      revision: checkpoint-15400        # the final checkpoint (epoch 5 of 5); "main" holds only the README
+      base_hf: unsloth/Qwen2.5-Coder-7B # the base the adapter was trained on (its adapter_config.json)
+      base_ollama: "qwen2.5-coder:7b-base-q8_0"   # the same weights in Ollama (8-bit: close to the training precision)
+  llama_cpp:
+    repo: https://github.com/ggml-org/llama.cpp
+    ref: b6100                          # pinned release: only its Python converter is used (no build)
+  tools_dir: data/tools                 # llama.cpp checkout, conversion venv, converted adapters
+
 # ------------------------------------------------------------------ phase 2: Pharo corpus
 corpus:
   snapshot_repo: pharo-llm/pharo-labels    # Hugging Face dataset written by ../labeling-pharo-repos (parsed methods)
   snapshot_revision: snapshot-20261010-182354
-  local_parsed_dirs:                       # reused instead of downloading when present
-    - ../labeling-pharo-repos/results/data/parsed
+  local_parsed_dirs: []                    # folders of parsed *.jsonl.gz reused instead of downloading (optional)
   max_source_chars: 6000                   # longer methods are kept but flagged (generated code, image dumps)
   trivial_max_statements: 1                # accessors / one-statement methods are flagged `is_trivial`
 
@@ -93,7 +107,7 @@ llm:
   # Three annotators of three families, never shown each other's answers (§4).
   annotators:
     - {name: qwen,    provider: ollama, model: "qwen3.8:27b",          family: Alibaba}
-    - {name: gemma,   provider: ollama, model: "gemma4:12b",           family: Google}
+    - {name: gemma,   provider: ollama, model: "gemma4:31b",           family: Google}
     - {name: mistral, provider: ollama, model: "mistral-small3.2:24b", family: Mistral AI}
   editor: {name: qwen, provider: ollama, model: "qwen3.8:27b"}   # writes definitions of merged concepts (phase 5)
   embedder: {provider: ollama, model: "nomic-embed-text"}         # concept similarity (phase 5)
@@ -161,7 +175,10 @@ benchmark:
 
 # ------------------------------------------------------------------ phase 11: execution / validation
 pharo:
-  dir: ../../pharo-benchmarks/work/pharo   # VM + validation image built by PharoBench (Pharo 13 + MuTalk + PharoBench-Support)
+  dir: data/pharo-image                    # VM + validation image (Pharo 13 + MuTalk + PharoBench-Support), built by setup
+  version: "130"                           # get.pharo.org: Pharo 13 image and VM
+  mutalk_version: v3.0.8
+  reuse_from: ../pharo-benchmarks/work/pharo   # a ready image with the same versions is copied instead of rebuilt
   image: PharoBench.image
   job_timeout_seconds: 240
   workers: 3
@@ -177,7 +194,8 @@ evaluation:
   models:
     - {name: reference, provider: reference}               # the reference solutions: must score 100%
     - {name: qwen3.8-27b, provider: ollama, model: "qwen3.8:27b"}
-    - {name: gemma4-12b, provider: ollama, model: "gemma4:12b"}
-    - {name: pharo-sft-7b, provider: ollama, model: "pharo-llm/Qwen2.5-Coder-SFT:q4_K_M"}
+    - {name: gemma4-31b, provider: ollama, model: "gemma4:31b"}
+    # the Pharo PT model is a pre-trained (base) model, not a chat model: asked in plain completion mode
+    - {name: pharo-pt-7b, provider: ollama, model: "pharo-llm/Qwen2.5-Coder-PT:7b", mode: completion}
   samples_per_task: 1                      # pass@1, greedy
   max_tokens: 1500

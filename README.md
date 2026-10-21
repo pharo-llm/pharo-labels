@@ -43,10 +43,20 @@ existing benchmarks (12, 6,433 tasks)          Pharo corpus (1,581 repositories,
 PROFILE=full ./run.sh       # the full-size study (sample sizes: config.yaml, profiles)
 ```
 
-Needs Python ≥ 3.10, [Ollama](https://ollama.com) (started and models pulled by `run.sh`), and for phases
-10–12 the Pharo 13 validation image of `../../pharo-benchmarks` (`work/pharo/PharoBench.image`; built by
-its `./run.sh selftest`). The Pharo corpus is downloaded once (1.2 GB) from the Hugging Face snapshot of
-`../labeling-pharo-repos` into `../data/pharo-corpus/`.
+Needs only Python ≥ 3.10, git and [Ollama](https://ollama.com). **Before any phase, `./run.sh` runs a setup step**
+(`./run.sh setup` alone; `pbr/setup.py`, log `results/logs/00_setup.log`) that obtains every dependency and stops
+the pipeline if one cannot be obtained:
+
+| Dependency | How setup gets it (once; then a check of a few seconds) |
+|---|---|
+| Ollama models of `config.yaml` | annotators qwen3.8:27b, **gemma4:31b**, mistral-small3.2:24b; editor, embedder, author; evaluated models — `ollama pull` |
+| **Pharo PT model** `pharo-llm/Qwen2.5-Coder-PT:7b` | its LoRA adapter from Hugging Face `pharo-llm/Qwen2.5-Coder-7B-PT` at branch `checkpoint-15400` (the final checkpoint; `main` holds only the README) → GGUF with llama.cpp's converter (pinned release, own venv in `data/tools/`) → registered in Ollama on the same base weights (`qwen2.5-coder:7b-base-q8_0`, Modelfile `ADAPTER`) → smoke completion |
+| Pharo validation image | Pharo 13 + MuTalk + PharoBench-Support (`pharo/support/`) in `data/pharo-image/`, copied from `../pharo-benchmarks/work/pharo` when it has the same versions, else downloaded and built |
+| Benchmarks | every benchmark of `pbr/benchmarks.py` into `data/existing-benchmarks/` (DeepSWE is gated: `HF_TOKEN` in `.env`) |
+| Pharo corpus | the parsed methods of the Hugging Face snapshot `pharo-llm/pharo-labels` into `data/pharo-corpus/` (1.3 GB) |
+
+`data/` is git-ignored. The Pharo PT model is a pre-trained model, not a chat model: phase 12 does not give it
+instructions but Pharo source to continue (`mode: completion` in `config.yaml`).
 
 **Resuming.** A phase is skipped when its *fingerprint* — the configuration it reads, the sample sizes, the
 run of every upstream phase, and the content of expert files it imports — has not changed; otherwise it
@@ -97,7 +107,8 @@ SIMULATED workbook to test the import path (never a result; delete it before rea
 | Module | File |
 |---|---|
 | Orchestration, resume, logs, status | `pbr/cli.py`, `pbr/common.py`, `run.sh` |
-| Data ingestion | `pbr/phases/p01_literature.py` (benchmark loader shared with `../labeling-existing-benchmarks`), `p02_corpus.py` |
+| Dependencies (models, PT conversion, Pharo image, data) | `pbr/setup.py` |
+| Data ingestion | `pbr/phases/p01_literature.py` (benchmark loader: `pbr/benchmarks.py`), `p02_corpus.py` |
 | Repository analysis: metadata, deduplication, parsing, sampling | `p02_corpus.py`, `p03_sampling.py` |
 | LLM annotation engine | `pbr/llm.py` (structured output + validation, retries, cache of raw answers, rate limits, cost ledger; Ollama / OpenAI-compatible / Anthropic), `pbr/items.py` |
 | Taxonomy manager | `pbr/taxonomy.py` (IDs, validation, versions, revisions, translation), `p04_discovery.py`, `p05_taxonomy.py` |

@@ -205,6 +205,9 @@ def main(argv=None) -> int:
         code = run_phases(cfg, phases, force)
         write_summary(cfg)
         return code
+    if a.command == "setup":
+        from .setup import main as setup_main
+        return setup_main(cfg)
     if a.command == "status":
         return status(cfg)
     if a.command == "logs":

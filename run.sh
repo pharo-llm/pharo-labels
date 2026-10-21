@@ -6,6 +6,7 @@
 #                               an interrupted phase resumes item by item (LLM answers are cached)
 #   ./run.sh 6                  one phase (re-run)          ./run.sh 3-7      a range
 #   ./run.sh from 6             phases 6 to 12              ./run.sh annotation   by name
+#   ./run.sh setup              only the dependencies (done automatically before any phase; SKIP_SETUP=1 skips)
 #   ./run.sh status             what is done, provisional, waiting, failed or stale
 #   ./run.sh logs [6] [-n 100]  the logs (all phases, or one), readable
 #   ./run.sh cost               LLM calls, tokens, time and cost per phase and model
@@ -36,7 +37,7 @@ PROFILE="${PROFILE:-pilot}"        # pilot = first deliverable (small samples) |
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
-if [ -f ../.env ]; then . ../.env; fi
+if [ -f .env ]; then . ./.env; fi          # tokens (HF_TOKEN, GITHUB_TOKEN), never committed
 export PROFILE
 
 if [ ! -x .venv/bin/python ] || [ requirements.txt -nt .venv/.installed ]; then
@@ -51,30 +52,24 @@ if [ ! -x .venv/bin/python ] || [ requirements.txt -nt .venv/.installed ]; then
   touch .venv/.installed
 fi
 
-needs_models() {   # does this command run a phase that asks LLMs (4, 5, 6, 8, 10, 12)?
-  case "${1:-run}" in status|logs|cost|reset|help|-h|--help) return 1 ;; esac
+needs_setup() {   # does this command run phases? (setup first: every dependency before any phase)
+  case "${1:-run}" in status|logs|cost|reset|help|-h|--help|simulate-expert) return 1 ;; esac
   return 0
 }
-if needs_models "${1:-}"; then
+if needs_setup "${1:-}"; then
   mkdir -p results/logs
+  command -v ollama >/dev/null || { echo "Ollama is needed: https://ollama.com/download"; exit 1; }
   host="${OLLAMA_HOST:-localhost:11434}"
-  if command -v ollama >/dev/null && ! curl -sf "http://${host#http://}/api/tags" >/dev/null; then
+  if ! curl -sf "http://${host#http://}/api/tags" >/dev/null; then
     echo "Starting Ollama (log: results/logs/ollama.log) …"
     nohup ollama serve > results/logs/ollama.log 2>&1 &
     for _ in $(seq 30); do curl -sf "http://${host#http://}/api/tags" >/dev/null && break; sleep 1; done
   fi
-  if command -v ollama >/dev/null; then   # pull the configured Ollama models that are missing
-    for m in $(.venv/bin/python -I - <<'EOF'
-import yaml
-c = yaml.safe_load(open("config.yaml"))
-ms = [a for a in c["llm"]["annotators"]] + [c["llm"]["editor"], c["llm"]["embedder"], c["benchmark"]["author"]]
-ms += [m for m in c["evaluation"]["models"]]
-print(" ".join(sorted({m["model"] for m in ms if m.get("provider", "ollama") == "ollama" and m.get("model")})))
-EOF
-); do
-      ollama list | awk 'NR>1 {print $1}' | grep -qx -e "$m" -e "$m:latest" || { echo "Downloading $m …"; ollama pull "$m" || echo "could not pull $m"; }
-    done
+  # models (library + the Pharo PT model built from its Hugging Face adapter), Pharo image, benchmarks, corpus
+  if [ "${SKIP_SETUP:-0}" != 1 ]; then
+    .venv/bin/python -m pbr setup || { echo "Setup failed: nothing was run (log: results/logs/00_setup.log)."; exit 1; }
   fi
+  [ "${1:-}" = setup ] && exit 0
 fi
 
 case "${1:-}" in

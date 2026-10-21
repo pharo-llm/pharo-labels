@@ -110,6 +110,7 @@ class Client:
         self.ledger = rd / "logs" / "llm_calls.jsonl"
         self._info = None
         self._thinks = False
+        self._stop = []
         if self.provider == "ollama":
             self.base = os.getenv("OLLAMA_HOST", "http://localhost:11434")
             if not self.base.startswith("http"):
@@ -166,7 +167,17 @@ class Client:
 
     def _raw(self, system: str, messages: list, schema: dict | None, max_tokens: int) -> tuple[str, dict]:
         t0 = time.time()
-        if self.provider == "ollama":
+        if self.provider == "ollama" and self.spec.get("mode") == "completion":
+            # a pre-trained (base) model: the text is continued as it is, no chat template, no instruction
+            self.info()
+            payload = {"model": self.model, "stream": False, "raw": True, "prompt": (system or "") + messages[-1]["content"],
+                       "options": {"temperature": self.temperature, "seed": self.seed, "num_predict": max_tokens,
+                                   "num_ctx": self.num_ctx, "stop": list(self.spec.get("stop") or []) + list(self._stop)}}
+            d = self._post(f"{self.base}/api/generate", payload)
+            text = d.get("response", "")
+            usage = {"input_tokens": d.get("prompt_eval_count", 0), "output_tokens": d.get("eval_count", 0),
+                     "done_reason": d.get("done_reason")}
+        elif self.provider == "ollama":
             self.info()
             payload = {"model": self.model, "stream": False,
                        "messages": ([{"role": "system", "content": system}] if system else []) + messages,
@@ -214,12 +225,17 @@ class Client:
                       + usage.get("output_tokens", 0) * float(prices.get("output", 0))) / 1e6, 6)
 
     def ask(self, *, system: str, user: str, schema: dict | None = None, max_tokens: int = 1024,
-            prompt_version: str = "v1", phase: str = "", item_id: str = "", validator=None) -> Answer:
+            prompt_version: str = "v1", phase: str = "", item_id: str = "", validator=None, stop=None) -> Answer:
         """Ask once (cached). ``validator(data) -> list[str]`` adds checks the schema cannot express
         (e.g. an evidence quote must occur in the code)."""
         key_obj = {"provider": self.provider, "model": self.model, "system": system, "user": user, "schema": schema,
                    "temperature": self.temperature, "num_ctx": self.num_ctx, "seed": self.seed,
                    "max_tokens": max_tokens, "prompt_version": prompt_version}
+        if self.spec.get("mode"):
+            key_obj["mode"] = self.spec["mode"]
+        if stop:
+            key_obj["stop"] = list(stop)
+        self._stop = list(stop or [])
         h = hashlib.sha256(json.dumps(key_obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         cpath = self.cache_dir / h[:2] / f"{h}.json"
         cached = read_json(cpath)
