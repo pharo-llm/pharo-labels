@@ -1,4 +1,4 @@
-"""Phase 6 — Independent structured annotation.
+"""Phase 7 — Independent structured annotation.
 
 Each of the three annotators, alone, classifies every item of the ``annotation`` split (literature tasks
 and Pharo methods the taxonomy was NOT built from) with the approved taxonomy: 1 to 3 behaviour IDs (the
@@ -24,7 +24,7 @@ import pandas as pd
 
 from .. import figures as F
 from .. import taxonomy as T
-from ..common import append_jsonl, now_iso, read_jsonl, write_parquet
+from ..common import append_jsonl, now_iso, read_jsonl, stable_hash, write_parquet
 from ..items import load_items
 from ..llm import annotators, ledger_summary
 
@@ -81,6 +81,12 @@ def evidence_found(evidence: str, text: str) -> bool:
     return bool(words) and sum(w in t for w in words) / len(words) >= 0.8
 
 
+def taxonomy_digest(tax: dict) -> str:
+    """Content hash of a taxonomy: two different taxonomies can carry the same version label (a draft rebuilt
+    by phase 6), so answers are matched to the taxonomy they were made with by this hash, never by the label."""
+    return stable_hash({k: tax[k] for k in ("categories", "subcategories", "behaviors")})
+
+
 def classify(ph, client, tax: dict, items: pd.DataFrame, raw_path, phase_label: str) -> list[dict]:
     """Annotate items with one client; resumes from raw_path (items already answered are not asked again,
     and the LLM cache makes a full rerun free)."""
@@ -88,10 +94,11 @@ def classify(ph, client, tax: dict, items: pd.DataFrame, raw_path, phase_label: 
     ids = T.behavior_ids(tax)
     system = SYSTEM.replace("MAXB", str(maxb)) + T.prompt_text(tax)
     sch = schema(ids, maxb)
-    done = {(r["item_id"], r["model"], r["taxonomy_version"]) for r in read_jsonl(raw_path)}
+    digest = taxonomy_digest(tax)
+    done = {(r["item_id"], r["model"], r.get("taxonomy_digest")) for r in read_jsonl(raw_path)}
     info = client.info()
     out = []
-    todo = [r for r in items.itertuples() if (r.item_id, client.name, tax["version"]) not in done]
+    todo = [r for r in items.itertuples() if (r.item_id, client.name, digest) not in done]
     if len(todo) < len(items):
         ph.log.info(f"{client.name}: {len(items) - len(todo)} items already annotated (resumed)")
     for r in ph.progress(todo, f"{client.name}: items annotated", every_s=60):
@@ -103,7 +110,8 @@ def classify(ph, client, tax: dict, items: pd.DataFrame, raw_path, phase_label: 
             b["category_id"], b["subcategory_id"], _ = T.behavior_path(tax, b["behavior_id"])
         rec = {"item_id": r.item_id, "source": r.source, "group": r.group, "purpose": r.purpose,
                "model": client.name, "model_id": info.get("model"), "model_digest": info.get("digest"),
-               "provider": info.get("provider"), "taxonomy_version": tax["version"], "valid": ans.valid,
+               "provider": info.get("provider"), "taxonomy_version": tax["version"], "taxonomy_digest": digest,
+               "valid": ans.valid,
                "errors": ans.errors, "behaviors": behs,
                "behavior_ids": [b["behavior_id"] for b in behs],
                "category_ids": list(dict.fromkeys(b["category_id"] for b in behs)),
@@ -139,18 +147,20 @@ def flatten(raw: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def latest_raw(raw: list[dict], version: str) -> list[dict]:
-    """The last answer per (item, model) for one taxonomy version (an append-only file may hold reruns)."""
+def latest_raw(raw: list[dict], tax: dict) -> list[dict]:
+    """The last answer per (item, model) made with this exact taxonomy (an append-only file may hold reruns and
+    answers made with earlier taxonomies; those are kept in the file, never used)."""
+    digest = taxonomy_digest(tax)
     last = {}
     for r in raw:
-        if r["taxonomy_version"] == version:
+        if r.get("taxonomy_digest") == digest:
             last[(r["item_id"], r["model"])] = r
     return list(last.values())
 
 
 def run(ph):
-    tax = T.load(ph.upstream(5, f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json"))
-    if ph.upstream_state(5).get("status") == "provisional":
+    tax = T.load(ph.upstream("taxonomy", f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json"))
+    if ph.upstream_state("taxonomy").get("status") == "provisional":
         ph.mark_provisional(f"annotations use taxonomy {tax['version']} that experts have not reviewed yet")
     items = load_items(ph, "annotation")
     ph.log.info(f"taxonomy {tax['version']} ({tax['status']}): {len(T.behavior_ids(tax))} behaviours; "
@@ -160,8 +170,8 @@ def run(ph):
     for client in annotators(ph.cfg):
         info = client.info()
         ph.log.info(f"annotator {client.name}: {info.get('model')} digest {info.get('digest')}")
-        classify(ph, client, tax, items, raw_path, "06_annotation")
-    raw = latest_raw(read_jsonl(raw_path), tax["version"])
+        classify(ph, client, tax, items, raw_path, ph.key)
+    raw = latest_raw(read_jsonl(raw_path), tax)
     item_ids = set(items["item_id"])
     raw = [r for r in raw if r["item_id"] in item_ids]
     df = flatten(raw)
@@ -178,7 +188,7 @@ def run(ph):
     ph.metric("unknown_share", round(float(df["is_unknown"].mean()), 3) if len(df) else None)
     ph.metric("insufficient_share", round(float(df["is_insufficient"].mean()), 3) if len(df) else None)
     ph.metric("evidence_found_share", round(float(df["evidence_found_share"].mean()), 3) if len(df) else None)
-    ph.metric("llm", ledger_summary(ph.cfg, "06_annotation"))
+    ph.metric("llm", ledger_summary(ph.cfg, ph.key))
     figures(ph, tax, df, raw, models)
 
 

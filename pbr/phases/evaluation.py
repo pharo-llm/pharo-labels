@@ -1,4 +1,4 @@
-"""Phase 12 — Model evaluation.
+"""Phase 13 — Model evaluation.
 
 Every chat model of ``evaluation.models`` receives the same prompt for every verified task variant
 (code generation, code completion, bug repair) under the same conditions (temperature 0, fixed seed,
@@ -35,7 +35,7 @@ from .. import pharo as P
 from .. import taxonomy as T
 from ..common import ROOT, now_iso, read_jsonl, stable_hash, write_csv, write_json, write_jsonl, write_text
 from ..llm import Client, LLMError, ledger_summary
-from .p08_profile import latest_taxonomy
+from .profile import latest_taxonomy
 
 PROMPT_VERSION = "evaluation-v1"
 SYSTEM = "You are an expert Pharo (Smalltalk) developer. Answer with the requested method source(s) only, in a ```smalltalk block."
@@ -88,11 +88,11 @@ def error_kind(c: dict | None) -> str:
 
 def run(ph):
     tax = latest_taxonomy(ph)
-    tasks = read_jsonl(ph.upstream(11, "benchmark_verified", "tasks_private.jsonl"))
+    tasks = read_jsonl(ph.upstream("verification", "benchmark_verified", "tasks_private.jsonl"))
     tasks = [t for t in tasks if t["validation_status"] in ("accepted", "auto_verified")]
     if not tasks:
-        raise RuntimeError("no verified task to evaluate (phase 11)")
-    if ph.upstream_state(11).get("status") == "provisional":
+        raise RuntimeError("no verified task to evaluate (phase 12)")
+    if ph.upstream_state("verification").get("status") == "provisional":
         ph.mark_provisional("tasks are auto-verified by execution but not yet reviewed by experts")
     ecfg = ph.cfg["evaluation"]
     runner = P.Runner(ph.cfg, ph.log.info)
@@ -118,7 +118,7 @@ def run(ph):
                 try:
                     for head, prompt in completion_prompts(t):
                         ans = cl.ask(system="", user=prompt, schema=None, max_tokens=int(ecfg["max_tokens"]), stop=stop,
-                                     prompt_version=PROMPT_VERSION + "-completion", phase="12_evaluation", item_id=t["task_id"])
+                                     prompt_version=PROMPT_VERSION + "-completion", phase=ph.key, item_id=t["task_id"])
                         srcs.append((head + ans.text).rstrip())
                         usage["latency_s"] += ans.usage.get("latency_s") or 0
                         usage["output_tokens"] += ans.usage.get("output_tokens") or 0
@@ -128,7 +128,7 @@ def run(ph):
             else:
                 try:
                     ans = cl.ask(system=SYSTEM, user=t["prompt"], schema=None, max_tokens=int(ecfg["max_tokens"]),
-                                 prompt_version=PROMPT_VERSION, phase="12_evaluation", item_id=t["task_id"])
+                                 prompt_version=PROMPT_VERSION, phase=ph.key, item_id=t["task_id"])
                     srcs, usage, valid = P.split_methods(ans.text), ans.usage, True
                 except LLMError as e:      # a model that loops or crashes fails this task; the evaluation goes on
                     ph.warn(f"{cl.name} on {t['task_id']}: no answer ({str(e)[:120]}) — counted as a failure")
@@ -198,7 +198,7 @@ def run(ph):
     for r in sdf[sdf["dimension"] == "all"].itertuples():
         ph.metric(f"pass@1_{r.model}", r.pass_rate)
     ph.metric("task_variants", len(tasks))
-    ph.metric("llm", ledger_summary(ph.cfg, "12_evaluation"))
+    ph.metric("llm", ledger_summary(ph.cfg, ph.key))
 
     repro = reproducibility(ph, runner, models)
     write_json(ph.path("reproducibility.json"), repro)
@@ -232,11 +232,11 @@ def release(ph, tax, df, sdf, repro):
     if rel.exists():
         shutil.rmtree(rel)
     rel.mkdir(parents=True)
-    bv = ph.upstream(11, "benchmark_verified")
+    bv = ph.upstream("verification", "benchmark_verified")
     shutil.copytree(bv, rel / "benchmark")
-    t5 = sorted(ph.upstream(7).glob("taxonomy_v*.json")) or [ph.upstream(5, f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json")]
+    t5 = sorted(ph.upstream("validation").glob("taxonomy_v*.json")) or [ph.upstream("taxonomy", f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json")]
     shutil.copy2(t5[-1], rel / t5[-1].name)
-    shutil.copy2(ph.upstream(9, "coverage_matrix.csv"), rel / "coverage_matrix.csv")
+    shutil.copy2(ph.upstream("coverage", "coverage_matrix.csv"), rel / "coverage_matrix.csv")
     df.to_csv(rel / "evaluation_results.csv", index=False)
     sdf.to_csv(rel / "evaluation_summary.csv", index=False)
     write_json(rel / "reproducibility.json", repro)

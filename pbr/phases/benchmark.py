@@ -1,11 +1,11 @@
-"""Phase 10 — Pharo benchmark construction.
+"""Phase 11 — Pharo benchmark construction.
 
 1. **Behaviours to cover**: ``selected_behaviors.csv`` in this folder when the research team wrote one
-   (column ``behavior_id``, optional ``reason``); otherwise chosen from the coverage matrix (phase 9):
+   (column ``behavior_id``, optional ``reason``); otherwise chosen from the coverage matrix (phase 10):
    statuses ``benchmark.statuses`` first (default: Pharo-only, then both), most frequent in Pharo first
    (with the experts' relevance as tie-break when available) → ``auto_selected_behaviors.csv`` with the
    reason of each choice.
-2. **Seeds**: real Pharo methods labelled with the behaviour (phases 6 and 8), not tests, 3–30 statements,
+2. **Seeds**: real Pharo methods labelled with the behaviour (phases 7 and 9), not tests, 3–30 statements,
    one per repository; and a literature task with the same behaviour when one exists (provenance: what
    existing benchmarks ask for this behaviour).
 3. **Authoring**: the author model writes a NEW self-contained task in the same spirit: class, context
@@ -15,7 +15,7 @@
    fails, the author sees the image's report and rewrites it (``benchmark.repair_rounds``).
 
 Each candidate: task ID, behaviour IDs (+ category, subcategory), evaluation task types (code generation,
-plus code completion and bug repair variants derived in phase 11), specification, provenance (seed method
+plus code completion and bug repair variants derived in phase 12), specification, provenance (seed method
 with repository, commit and link; literature example), reference implementation, tests, target Pharo
 version, validation status.
 
@@ -36,7 +36,7 @@ from .. import pharo as P
 from .. import taxonomy as T
 from ..common import read_jsonl, write_csv, write_json, write_jsonl, write_text
 from ..llm import Client, ledger_summary
-from .p08_profile import latest_taxonomy
+from .profile import latest_taxonomy
 
 PROMPT_VERSION = "author-v3"
 
@@ -80,8 +80,8 @@ def select_behaviors(ph, tax) -> pd.DataFrame:
         sel["reason"] = sel.get("reason", "selected by the research team")
         ph.log.info(f"behaviours selected by the team: {len(sel)} (selected_behaviors.csv)")
         return sel
-    cov = pd.read_csv(ph.upstream(9, "coverage_matrix.csv"))
-    rel_p = ph.upstream(7, "behavior_relevance.csv")
+    cov = pd.read_csv(ph.upstream("coverage", "coverage_matrix.csv"))
+    rel_p = ph.upstream("validation", "behavior_relevance.csv")
     if rel_p.exists():
         r = pd.read_csv(rel_p)
         cov = cov.merge(r[["behavior_id", "relevance_benchmark"]], on="behavior_id", how="left")
@@ -172,23 +172,23 @@ def run(ph):
     sel = select_behaviors(ph, tax)
     if sel.empty:
         raise RuntimeError("no behaviour to build tasks for (coverage matrix empty?)")
-    for u in (7, 8, 9):
+    for u in ("validation", "profile", "coverage"):
         if ph.upstream_state(u).get("status") == "provisional":
             ph.mark_provisional(f"behaviours chosen from provisional results (phase {u})")
             break
-    # labels of Pharo methods: phase 8 profile (model labels) + phase 6 annotation (AI majority)
-    prof = pd.read_parquet(ph.upstream(8, "pharo_behavior_profiles.parquet"), columns=["method_id", "behavior_ids"])
+    # labels of Pharo methods: phase 9 profile (model labels) + phase 7 annotation (AI majority)
+    prof = pd.read_parquet(ph.upstream("profile", "pharo_behavior_profiles.parquet"), columns=["method_id", "behavior_ids"])
     import ast
-    agr = pd.read_csv(ph.upstream(7, "item_agreement.csv"), converters={"majority": ast.literal_eval})
+    agr = pd.read_csv(ph.upstream("validation", "item_agreement.csv"), converters={"majority": ast.literal_eval})
     agr = agr[agr["source"] == "pharo"]
     labels = pd.concat([prof.assign(behavior_ids=prof["behavior_ids"].map(list)),
                         pd.DataFrame({"method_id": agr["item_id"].str[2:], "behavior_ids": agr["majority"].map(list)})])
-    methods = pd.read_parquet(ph.upstream(2, "methods.parquet"),
+    methods = pd.read_parquet(ph.upstream("corpus", "methods.parquet"),
                               columns=["method_id", "repository", "commit_sha", "class_name", "selector", "source", "url",
                                        "is_test", "n_statements", "superclass", "package"],
                               filters=[("method_id", "in", list(set(labels["method_id"])))])
-    cov = pd.read_csv(ph.upstream(9, "coverage_matrix.csv")).set_index("behavior_id")
-    lit = pd.read_parquet(ph.upstream(1, "literature_tasks.parquet"), columns=["task_uid", "card", "benchmark_name"]).set_index("task_uid")
+    cov = pd.read_csv(ph.upstream("coverage", "coverage_matrix.csv")).set_index("behavior_id")
+    lit = pd.read_parquet(ph.upstream("literature", "literature_tasks.parquet"), columns=["task_uid", "card", "benchmark_name"]).set_index("task_uid")
     author = Client(bcfg["author"], ph.cfg)
     runner = P.Runner(ph.cfg, ph.log.info)
     ph.log.info(f"author {author.info().get('model')}; Pharo image {runner.info.get('system_version', '?')} "
@@ -219,7 +219,7 @@ def run(ph):
         task, result, history = None, None, []
         for rnd in range(int(bcfg.get("repair_rounds", 1)) + 1):
             ans = author.ask(system=system, user=user, schema=SCHEMA, max_tokens=4000, prompt_version=PROMPT_VERSION,
-                             phase="10_benchmark", item_id=f"{task_id}#r{rnd}")
+                             phase=ph.key, item_id=f"{task_id}#r{rnd}")
             if not ans.valid:
                 history.append({"round": rnd, "outcome": "invalid author answer", "errors": ans.errors})
                 break
@@ -268,7 +268,7 @@ def run(ph):
     ph.metric("candidates", len(cands))
     ph.metric("candidates_executing", len(ok))
     ph.metric("funnel", funnel)
-    ph.metric("llm", ledger_summary(ph.cfg, "10_benchmark"))
+    ph.metric("llm", ledger_summary(ph.cfg, ph.key))
     stages = ["behaviors", "seeds", "authored", "installs", "reference_passes"]
     F.barh(["behaviours selected", "seed methods", "valid author answers", "install in Pharo", "reference passes its tests"],
            [funnel[s] for s in stages], "Benchmark construction funnel", "count", ph.figure("funnel.png"),

@@ -1,4 +1,4 @@
-"""The code benchmarks LLMs are evaluated on (phase 1 of the pipeline; moved here from the former
+"""The code benchmarks LLMs are evaluated on (phase 2 of the pipeline; moved here from the former
 labeling-existing-benchmarks/ folder).
 
 - BENCHMARKS: each benchmark (a scenario of a benchmark counts as its own), pinned to a revision
@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
-DATA = HERE.parent / "data" / "existing-benchmarks"      # downloaded once by ./run.sh setup (phase 1 reads it)
+DATA = HERE.parent / "data" / "existing-benchmarks"      # downloaded once by ./run.sh setup (phase 2 reads it)
 RESULTS = HERE / "results"
 HF = "https://huggingface.co/datasets"
 

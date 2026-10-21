@@ -1,9 +1,8 @@
-"""Phase 2 — Pharo corpus preparation.
+"""Phase 3 — Pharo corpus preparation.
 
-Input: the methods of the Pharo repositories mined by ../labeling-pharo-repos (GitHub search, filter 1,
-clone at a pinned commit, Tonel / FileTree parsing). They are read from its parsed files
-(``data/parsed/<owner>__<repo>.jsonl.gz``), locally when present, otherwise from its Hugging Face snapshot
-(config ``corpus``), together with the GitHub metadata of every repository and its application domain.
+Input: the methods of the repositories selected in phase 1 (repositories: hard filters + weighted quality score),
+read from the parsed files of the corpus snapshot (``data/parsed/<owner>__<repo>.jsonl.gz``; Hugging Face
+``pharo-llm/pharo-labels``, downloaded by setup), with the GitHub metadata of every repository and its domain.
 
 What this phase adds:
 * **Provenance**: every method keeps repository, commit, file, line, class, side, selector, and a
@@ -20,6 +19,8 @@ What this phase adds:
 
 Outputs
   repositories.parquet   one row per repository: metadata, domain, size, test share, duplication, status
+  method_filters.parquet one row per method: decision (exclude / review / keep / keep_test) and every reason
+                         (rules: pbr/method_filters.py); method_filters_summary.csv: methods per decision and rule
   methods.parquet        one row per method (source included)
   duplicates.parquet     one row per non-canonical copy: method_id, canonical_method_id, kind, scope, group size
   figures/: methods_per_repository.png, repository_groups.png, duplication.png, method_size.png, features.png
@@ -38,7 +39,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .. import figures as F
-from ..common import data_dir, resolve, write_parquet
+from ..common import data_dir, resolve, write_csv, write_parquet
 
 FEATURES = ["has_conditional", "has_loop", "has_collection_iteration", "has_exception_handler", "has_exception_signal",
             "has_recursion", "has_reflection", "has_metaprogramming", "has_dynamic_send", "has_super_send",
@@ -177,19 +178,60 @@ SCHEMA = pa.schema([
 ])
 
 
+def apply_method_filters(ph, methods_path, mirrors: set):
+    """The decision of every method (pbr/method_filters.py): exclude / review / keep / keep_test, with reasons."""
+    from .. import method_filters as MF
+    cols = ["method_id", "repository", "class_name", "superclass", "selector", "source", "source_chars", "is_test",
+            "parse_status", "duplicate_of", "duplicate_kind", "n_lines", "n_message_sends", "n_blocks", "over_long",
+            "referenced_globals", "pragmas", "is_getter", "is_setter", "is_empty", "is_lazy_initializer"]
+    df = pd.read_parquet(methods_path, columns=cols)
+    gpath = resolve(ph.cfg["pharo"]["dir"]) / "globals.txt"
+    image_globals = set(gpath.read_text().split()) if gpath.exists() else set()
+    if not image_globals:
+        ph.warn("no Pharo image globals (data/pharo-image/globals.txt, written by setup): the rule 'requires "
+                "dependencies' is skipped")
+    repo_classes = df.groupby("repository")["class_name"].agg(lambda x: set(x)).to_dict()
+    ph.log.info(f"method filters on {len(df):,} methods ({len(image_globals):,} Pharo image globals known)")
+    parts = []
+    for i in ph.progress(range(0, len(df), 100_000), "method filters (batches of 100,000)", every_s=30):
+        parts.append(MF.classify(df.iloc[i:i + 100_000], ph.cfg, mirrors, image_globals, repo_classes, strip_comments))
+    dec = pd.concat(parts, ignore_index=True)
+    dec["rule"] = dec["reasons"].map(MF.first_rule)
+    write_parquet(ph.path("method_filters.parquet"), dec)
+    summ = (dec.assign(rule=np.where(dec["decision"].isin(["exclude", "review"]), dec["rule"], dec["decision"]))
+            .groupby(["decision", "rule"]).size().rename("methods").reset_index().sort_values(["decision", "methods"],
+                                                                                              ascending=[True, False]))
+    write_csv(ph.path("method_filters_summary.csv"), summ)
+    counts = dec["decision"].value_counts()
+    for d in ("keep", "review", "keep_test", "exclude"):
+        ph.metric(f"methods_{d}", int(counts.get(d, 0)))
+    ph.log.info("method decisions: " + ", ".join(f"{d} {int(counts.get(d, 0)):,}" for d in ("keep", "review", "keep_test", "exclude")))
+    ex = summ[summ["decision"] == "exclude"]
+    # review: a method can have several reasons; each reason counts every method that has it
+    rv_reasons = ["simple message forwarding", "non-trivial initialisation", "very long method", "requires dependencies"]
+    rv_df = dec[dec["decision"] == "review"]
+    rv = pd.DataFrame({"rule": rv_reasons, "methods": [int(rv_df["reasons"].str.contains(r, regex=False).sum()) for r in rv_reasons]})
+    rv = rv[rv["methods"] > 0].sort_values("methods", ascending=False)
+    labels = [f"excluded: {r}" for r in ex["rule"]] + [f"review: {r}" for r in rv["rule"]] + ["kept", "kept separately: tests"]
+    vals = list(ex["methods"]) + list(rv["methods"]) + [int(counts.get("keep", 0)), int(counts.get("keep_test", 0))]
+    cols_ = [F.STATUS["critical"]] * len(ex) + [F.STATUS["warning"]] * len(rv) + [F.STATUS["good"], F.SERIES[0]]
+    F.barh(labels, vals, f"Method filters on {len(dec):,} methods of the selected repositories", "methods",
+           ph.figure("method_filters.png"), colors=cols_, fmt="{:,.0f}", max_items=60,
+           note="excluded: counted under its first (strongest) rule; review: every reason counted (a method can have several) — kept in the samples, marked")
+
+
 def run(ph):
     c = ph.cfg["corpus"]
     parsed, snap = find_sources(ph)
     meta, selected, domains = load_metadata(ph, snap)
     files = sorted(parsed.glob("*.jsonl.gz"))
-    ph.log.info(f"{len(files)} parsed repositories; GitHub metadata for {len(meta)}; "
-                f"filter-1 selection: {len(selected) if selected else 'not available'}; domains for {len(domains)}")
     name_of = {f: f.name[:-len(".jsonl.gz")].replace("__", "/", 1) for f in files}
-    if selected:
-        kept = [f for f in files if name_of[f] in selected]
-        ph.log.info(f"{len(kept)} repositories passed filter 1 (the others are recorded as excluded)")
-    else:
-        kept = files
+    # the repositories phase 1 selected (hard filters + weighted quality score)
+    chosen = set(ph.upstream("repositories", "selected_repos.txt").read_text().split())
+    scores = pd.read_csv(ph.upstream("repositories", "repository_scores.csv")).set_index("repository")
+    ph.log.info(f"{len(files)} parsed repositories in the snapshot; {len(chosen)} selected by phase 1; "
+                f"GitHub metadata for {len(meta)}; domains for {len(domains)}")
+    kept = [f for f in files if name_of[f] in chosen]
     # canonical copy = the oldest repository (then name), so process the repositories in that order
     created = {f: str(_g(meta.get(name_of[f], {}), "created_at", "github.created_at", default="9999")) for f in kept}
     kept.sort(key=lambda f: (created[f], name_of[f]))
@@ -264,7 +306,9 @@ def run(ph):
                     "max_block_depth": int(r.get("max_block_depth") or feats.get("max_nesting_depth") or 0),
                     "n_arguments": int(feats.get("n_arguments") or 0), "n_temporaries": int(feats.get("n_temporaries") or 0),
                     "sent_selectors": sorted({m.get("selector") for m in r.get("message_sends") or [] if m.get("selector")}),
-                    "referenced_globals": sorted({str(x) for x in r.get("referenced_globals") or []}),
+                    # the parser records each reference as {"name": ..., "line": ...}: keep the names
+                    "referenced_globals": sorted({str(x.get("name")) if isinstance(x, dict) else str(x)
+                                                  for x in r.get("referenced_globals") or []} - {"None"}),
                     "pragmas": [p.get("selector") for p in r.get("pragmas") or [] if p.get("selector")],
                     **{k: bool(feats.get(k)) for k in FEATURES},
                     "source_hash": raw_h, "norm_hash": norm_h, "is_trivial": nstat <= triv,
@@ -296,7 +340,9 @@ def run(ph):
     tmp_path.replace(out_path)
 
     # ---------------------------------------------------------------- duplicates and mirrors
-    excluded = [{"repository": name_of[f], "status": "excluded: did not pass filter 1", "n_methods": 0}
+    excluded = [{"repository": name_of[f], "n_methods": 0,
+                 "status": "excluded: " + (str(scores.loc[name_of[f], "reason"]) if name_of[f] in scores.index
+                                           else "not in the snapshot's filter-1 selection")}
                 for f in files if f not in set(kept)]
     group_size = Counter(h for *_, h in dup_rows)
     repo_of_canon = {}
@@ -324,10 +370,12 @@ def run(ph):
     q = repos.loc[repos["n_methods"] > 0, "n_methods"].quantile([1 / 3, 2 / 3]).tolist() if len(repos) else [0, 0]
     repos["size_class"] = pd.cut(repos["n_methods"], [-1, q[0], q[1], np.inf], labels=["small", "medium", "large"]).astype(str)
     repos = pd.concat([repos, pd.DataFrame(excluded)], ignore_index=True)
+    repos["quality_score"] = repos["repository"].map(scores["score"])      # phase 1 (selection only, never a weight)
     write_parquet(ph.path("repositories.parquet"), repos)
 
     inc = repos[repos["status"] == "included"]
     n_methods = int(inc["n_methods"].sum())
+    apply_method_filters(ph, out_path, set(inc.loc[inc["is_mirror"].astype(bool), "repository"]))
     ph.metric("repositories", int(len(inc)))
     ph.metric("repositories_excluded", int(len(repos) - len(inc)))
     ph.metric("methods", n_methods)

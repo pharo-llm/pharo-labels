@@ -1,4 +1,4 @@
-"""Phase 7 — AI agreement and expert validation.
+"""Phase 8 — AI agreement and expert validation.
 
 A. **AI agreement** on the annotation split, with standardised IDs: per item, full / partial / no
    agreement, or insufficient context / unknown (at least two models say so); Krippendorff's α with the
@@ -136,12 +136,12 @@ def write_expert_workbook(ph, tax: dict, sel: pd.DataFrame, texts: dict):
     idx = T.index(tax)
     rows = [{"row_key": r.item_id, "source": r.source, "title": texts[r.item_id]["title"],
              "provenance": texts[r.item_id]["provenance"], "item": texts[r.item_id]["text"]} for r in sel.itertuples()]
-    wb = W.new_workbook("Expert validation (phase 7) — blinded", [
+    wb = W.new_workbook("Expert validation (phase 8) — blinded", [
         "Sheet 'Method Annotation': for each item (a Pharo method or a code benchmark task), choose 1 to 3 behaviours "
         "from the drop-down (most important first), quote the evidence, give your confidence. "
         "UNKNOWN = no behaviour fits (describe it in missing_behavior); INSUFFICIENT = not enough context.",
         "The AI annotators' answers are deliberately NOT shown: annotate independently. "
-        "Definitions and rules: sheet 'Taxonomy' (and annotation_guidelines in results/05_taxonomy/).",
+        "Definitions and rules: sheet 'Taxonomy' (and annotation_guidelines in results/06_taxonomy/).",
         "Sheet 'Taxonomy Review' (optional): accept / rename / redefine / merge / split / reject / add / move concepts; "
         "your decisions produce the next taxonomy version.",
         "Sheet 'Behavior Relevance': how important is each behaviour in real Pharo code (1 = marginal ... 5 = essential), "
@@ -344,7 +344,7 @@ def write_adjudication(ph, tax, ref, human, items, models):
                          **{f"ai_{m}": show(getattr(r, f"{m}_behaviors")) for m in models}})
     if not need:
         return 0
-    wb = W.new_workbook("Adjudication (phase 7) — AI answers revealed", [
+    wb = W.new_workbook("Adjudication (phase 8) — AI answers revealed", [
         "Items where the experts disagree among themselves or with the AI majority. Now that independent labels exist, "
         "the AI answers are shown. Decide the final behaviours (final_1..3) and why (decision).",
         "decision: expert_correct · ai_correct · both_partially · taxonomy_problem (explain in comment). "
@@ -381,8 +381,8 @@ def import_adjudication(ph, tax) -> tuple[dict, list, list]:
 # ---------------------------------------------------------------------------------------------- phase
 def run(ph):
     version = ph.cfg["taxonomy"].get("version", "v1")
-    tax = T.load(ph.upstream(5, f"taxonomy_{version}.json"))
-    ann = pd.read_parquet(ph.upstream(6, "annotations_validated.parquet"))
+    tax = T.load(ph.upstream("taxonomy", f"taxonomy_{version}.json"))
+    ann = pd.read_parquet(ph.upstream("annotation", "annotations_validated.parquet"))
     models = [a["name"] for a in ph.cfg["llm"]["annotators"]]
     items = item_table(ann, models)
     write_csv(ph.path("item_agreement.csv"), items)
@@ -401,7 +401,7 @@ def run(ph):
     write_csv(ph.path("gold_selection.csv"), sel[["item_id", "source", "level", "stratum", "stratum_N", "stratum_m", "stratum_weight"]])
     write_expert_workbook(ph, tax, sel, texts)
     ph.log.info(f"expert workbook: {len(sel)} items ({sel['stratum'].value_counts().to_dict()}), AI answers hidden "
-                f"→ results/07_validation/expert/expert_workbook.xlsx")
+                f"→ results/08_validation/expert/expert_workbook.xlsx")
 
     human, decisions, relevance, raw, problems = import_experts(ph, tax, set(sel["item_id"]))
     write_jsonl(ph.path("expert", "imported_rows.jsonl"), raw.to_dict("records") if len(raw) else [])
@@ -460,7 +460,7 @@ def run(ph):
             write_csv(ph.path("behavior_relevance.csv"), agg)
         if decisions:
             nxt = f"v{int(re.sub(r'[^0-9]', '', version) or 1) + 1}"
-            v2, probs = T.apply_decisions(tax, decisions, nxt, source="07_validation/expert/returned")
+            v2, probs = T.apply_decisions(tax, decisions, nxt, source="08_validation/expert/returned")
             for p in probs:
                 ph.warn(f"taxonomy decision not applied: {p}")
             v2["status"] = "corrected by experts"

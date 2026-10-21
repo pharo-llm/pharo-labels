@@ -19,22 +19,23 @@ def _cut(s, n):
 
 
 def load_items(ph, split: str, include_targeted: bool = True) -> pd.DataFrame:
-    """The items of a split (phase 3), with the columns every phase needs: item_id, source ('literature' or
+    """The items of a split (phase 4), with the columns every phase needs: item_id, source ('literature' or
     'pharo'), group, purpose, weight, text, title, provenance."""
-    sample = pd.read_csv(ph.upstream(3, "pilot_sample.csv"))
+    sample = pd.read_csv(ph.upstream("sampling", "pilot_sample.csv"))
     sample = sample[sample["split"] == split]
     if not include_targeted:
         sample = sample[sample["purpose"] == "random"]
-    lit_s = pd.read_csv(ph.upstream(3, "literature_sample.csv"))
+    lit_s = pd.read_csv(ph.upstream("sampling", "literature_sample.csv"))
     lit_s = lit_s[lit_s["split"] == split]
     rows = []
     if len(lit_s):
-        lit = pd.read_parquet(ph.upstream(1, "literature_tasks.parquet"),
+        lit = pd.read_parquet(ph.upstream("literature", "literature_tasks.parquet"),
                               columns=["task_uid", "benchmark", "benchmark_name", "item_id", "card", "task_type",
                                        "language", "source_dataset", "source_revision"])
         lit = lit_s.merge(lit, on=["task_uid", "benchmark", "task_type"], how="left")
         for r in lit.itertuples():
             rows.append({"item_id": f"L:{r.task_uid}", "source": "literature", "group": r.benchmark, "purpose": "random",
+                         "subset": "literature",
                          "weight": r.weight, "repository": None, "title": f"{r.benchmark_name} {r.item_id}",
                          "task_type": r.task_type, "language": r.language,
                          "provenance": f"{r.source_dataset}@{str(r.source_revision)[:12]} item {r.item_id}",
@@ -43,12 +44,16 @@ def load_items(ph, split: str, include_targeted: bool = True) -> pd.DataFrame:
         cols = ["method_id", "package", "class_name", "side", "selector", "protocol", "superclass",
                 "class_instance_variables", "class_comment", "source", "is_test", "url", "repository", "commit_sha",
                 "source_path", "line"]
-        m = pd.read_parquet(ph.upstream(2, "methods.parquet"), columns=cols,
+        m = pd.read_parquet(ph.upstream("corpus", "methods.parquet"), columns=cols,
                             filters=[("method_id", "in", list(sample["method_id"]))])
-        m = sample[["method_id", "group", "purpose", "signal", "weight"]].merge(m, on="method_id", how="left")
+        keep = [c for c in ("method_id", "group", "purpose", "signal", "weight", "subset", "filter_decision", "filter_reasons")
+                if c in sample.columns]
+        m = sample[keep].merge(m, on="method_id", how="left")
         context = ph.cfg.get("annotation", {}).get("context", "class")
         for r in m.itertuples():
             rows.append({"item_id": f"P:{r.method_id}", "source": "pharo", "group": r.group, "purpose": r.purpose,
+                         "subset": getattr(r, "subset", "production"), "filter_decision": getattr(r, "filter_decision", None),
+                         "filter_reasons": getattr(r, "filter_reasons", None),
                          "weight": r.weight, "repository": r.repository, "title": f"{r.class_name}{' class' if r.side == 'class' else ''}>>{r.selector}",
                          "task_type": None, "language": "Pharo", "signal": r.signal,
                          "provenance": r.url, "text": pharo_text(r, context == "class")})

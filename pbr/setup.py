@@ -5,12 +5,14 @@
 1. Ollama answers; every model of config.yaml that comes from the Ollama library is pulled when missing
    (annotators, editor, embedder, benchmark author, evaluated models, bases of custom models).
 2. Custom models (``setup.custom_models``): a LoRA adapter published on Hugging Face (the Pharo PT model) is
-   downloaded at its pinned revision, converted to GGUF with llama.cpp's converter (pinned release, own
-   venv), and registered in Ollama on top of the same base weights (Modelfile ``ADAPTER``); a smoke
-   completion checks it answers. Its provenance goes to data/tools/custom_models.json.
+   downloaded at its pinned revision and merged into its base weights with peft (Ollama >= 0.40 no longer
+   applies LoRA adapters); a local base is reused only if its files' sha256 match the Hub. The merged model is
+   converted to GGUF with llama.cpp's converter (pinned release, own venv) and registered in Ollama; a smoke
+   completion checks it answers. Provenance (revision, hashes, method): data/tools/custom_models.json.
 3. Pharo validation image (Pharo 13 + MuTalk + PharoBench-Support): copied from ``pharo.reuse_from`` when it
-   has the same versions, else downloaded and built; a smoke run checks the VM starts.
-4. Data: every benchmark of phase 1 (into data/existing-benchmarks/) and the Pharo corpus snapshot of phase 2
+   has the same versions, else downloaded and built; a smoke run checks the VM starts. Its global names are listed
+   in globals.txt (the method filter "requires dependencies" of phase 3 uses them).
+4. Data: every benchmark of phase 2 (into data/existing-benchmarks/) and the Pharo corpus snapshot of phase 3
    (into data/pharo-corpus/). A gated benchmark without a token is a warning, not a failure.
 
 Everything is idempotent: a complete setup takes a few seconds. Log: results/logs/00_setup.log.
@@ -72,18 +74,34 @@ def library_models(cfg: dict) -> list[str]:
     specs += list(cfg["evaluation"]["models"])
     custom = {c["ollama_name"] for c in cfg.get("setup", {}).get("custom_models", [])}
     names = [s["model"] for s in specs if s.get("provider", "ollama") == "ollama" and s.get("model") and s["model"] not in custom]
-    names += [c["base_ollama"] for c in cfg.get("setup", {}).get("custom_models", [])]
     return list(dict.fromkeys(names))
+
+
+def loadable(m: str) -> bool:
+    """Listed is not enough: an interrupted or concurrent pull can leave a manifest whose layers are missing."""
+    try:
+        r = requests.post(f"{ollama_url()}/api/show", json={"model": m}, timeout=60)
+        return r.status_code == 200 and "error" not in r.json()
+    except (requests.RequestException, ValueError):
+        return False
 
 
 def pull_models(cfg, log):
     have = ollama_models()
     for m in library_models(cfg):
-        if m in have:
+        if m in have and loadable(m):
             log.info(f"✓ Ollama model {m}")
             continue
+        if m in have:
+            log.warning(f"! Ollama model {m} is listed but cannot be loaded (incomplete download): pulling the missing layers")
         log.info(f"… pulling {m} (Ollama library)")
         _run(["ollama", "pull", m], log, timeout=6 * 3600, quiet=True)
+        if not loadable(m):            # still broken: remove it and download it whole
+            log.warning(f"! {m} still cannot be loaded: removed and downloaded again")
+            subprocess.run(["ollama", "rm", m], capture_output=True)
+            _run(["ollama", "pull", m], log, timeout=6 * 3600, quiet=True)
+        if not loadable(m):
+            raise SetupError(f"{m} was pulled but Ollama still cannot load it")
         log.info(f"✓ Ollama model {m} pulled")
 
 
@@ -99,33 +117,70 @@ def llama_cpp(cfg, log) -> tuple[Path, Path]:
     t = tools(cfg)
     lc = cfg["setup"]["llama_cpp"]
     repo = t / f"llama.cpp-{lc['ref']}"
-    if not (repo / "convert_lora_to_gguf.py").exists():
+    if not (repo / "convert_hf_to_gguf.py").exists():
         log.info(f"… llama.cpp {lc['ref']} (converter scripts only)")
         if repo.exists():
             shutil.rmtree(repo)
         _run(["git", "clone", "--depth", "1", "--branch", lc["ref"], lc["repo"], repo], log, quiet=True)
     venv = t / "venv-convert"
     py = venv / "bin" / "python"
-    marker = venv / f".ok-{lc['ref']}"
+    marker = venv / f".ok-{lc['ref']}-merge"
     if not marker.exists():
-        log.info("… conversion environment (torch CPU, transformers, gguf); one-time, a few minutes")
+        log.info("… conversion environment (torch CPU, transformers, peft, gguf); one-time, a few minutes")
         if not py.exists():
             _run([sys.executable, "-m", "venv", venv], log)
         _run([py, "-m", "pip", "install", "-q", "--upgrade", "pip"], log, quiet=True)
-        _run([py, "-m", "pip", "install", "-q", "-r", repo / "requirements" / "requirements-convert_lora_to_gguf.txt"],
-             log, cwd=repo / "requirements", timeout=3 * 3600, quiet=True)
+        # what the LoRA converter imports; the release's own requirements file pins torch versions that have no
+        # build for recent Pythons, so the packages are installed directly (CPU torch)
+        _run([py, "-m", "pip", "install", "-q", "torch", "numpy", "safetensors", "sentencepiece", "transformers", "protobuf",
+              "peft", "accelerate"],
+             log, timeout=3 * 3600, quiet=True)
         _run([py, "-m", "pip", "install", "-q", "-e", repo / "gguf-py"], log, quiet=True)
         marker.touch()
     log.info(f"✓ llama.cpp {lc['ref']} converter and its environment")
     return repo, py
 
 
+MERGE = """
+import sys, torch
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+base, adapter, out = sys.argv[1:4]
+model = AutoModelForCausalLM.from_pretrained(base, torch_dtype=torch.float16, device_map="cpu", low_cpu_mem_usage=True)
+model = PeftModel.from_pretrained(model, adapter).merge_and_unload()
+model.save_pretrained(out, safe_serialization=True, max_shard_size="5GB")
+AutoTokenizer.from_pretrained(adapter).save_pretrained(out)       # the tokenizer the adapter was trained with
+print("merged", out)
+"""
+
+
+def base_weights(spec: dict, t: Path, log) -> tuple[Path, bool]:
+    """(folder of the base model's weights, downloaded by setup?). A local copy is used only if every weight file
+    has the sha256 the Hub records for it."""
+    from huggingface_hub import HfApi, snapshot_download
+    info = HfApi().model_info(spec["base_hf"], files_metadata=True)
+    want = {x.rfilename: x.lfs.sha256 for x in info.siblings if x.rfilename.endswith(".safetensors") and x.lfs}
+    for d in spec.get("base_local_dirs") or []:
+        d = Path(os.path.expanduser(d))
+        if all((d / f).exists() for f in want):
+            log.info(f"  checking the local base {d} against {spec['base_hf']} (sha256 of {len(want)} files)")
+            if all(file_sha256(d / f) == h for f, h in want.items()):
+                log.info(f"  local base {d} is identical to {spec['base_hf']}: reused")
+                return d, False
+            log.info(f"  local base {d} differs from {spec['base_hf']}: not used")
+    out = t / "base" / spec["base_hf"].replace("/", "_")
+    log.info(f"… downloading the base {spec['base_hf']} ({sum(x.size or 0 for x in info.siblings) / 1e9:.0f} GB)")
+    snapshot_download(spec["base_hf"], local_dir=str(out), allow_patterns=["*.safetensors", "*.json", "merges.txt", "vocab.json"])
+    return out, True
+
+
 def build_custom(cfg, spec: dict, log):
+    """A LoRA adapter of the Hub → merged into its base (peft) → GGUF (llama.cpp) → registered in Ollama."""
     name = spec["ollama_name"]
-    if name in ollama_models():
+    if name in ollama_models() and loadable(name):
         log.info(f"✓ custom model {name}")
         return
-    from huggingface_hub import hf_hub_download, snapshot_download
+    from huggingface_hub import snapshot_download
     t = tools(cfg)
     slug = name.replace("/", "_").replace(":", "_")
     adir = t / "adapters" / slug
@@ -136,23 +191,26 @@ def build_custom(cfg, spec: dict, log):
     acfg = json.loads((adir / "adapter_config.json").read_text())
     if acfg.get("base_model_name_or_path") and acfg["base_model_name_or_path"] != spec["base_hf"]:
         raise SetupError(f"{name}: the adapter was trained on {acfg['base_model_name_or_path']}, config says {spec['base_hf']}")
-    # the converter needs the base model's config (not its weights)
-    bdir = t / "base-configs" / spec["base_hf"].replace("/", "_")
-    for f in ("config.json", "tokenizer_config.json", "tokenizer.json", "generation_config.json"):
-        try:
-            hf_hub_download(spec["base_hf"], f, local_dir=str(bdir))
-        except Exception:  # noqa: BLE001 — optional files
-            pass
     repo, py = llama_cpp(cfg, log)
-    gguf = t / "adapters" / f"{slug}.gguf"
+    outtype = spec.get("outtype", "q8_0")
+    gguf = t / "gguf" / f"{slug}-{outtype}.gguf"
     if not gguf.exists():
-        _run([py, repo / "convert_lora_to_gguf.py", adir, "--base", bdir, "--outtype", "f16", "--outfile", gguf], log,
-             timeout=3600)
-    have = ollama_models()
-    if spec["base_ollama"] not in have:
-        _run(["ollama", "pull", spec["base_ollama"]], log, timeout=6 * 3600, quiet=True)
-    mf = t / "adapters" / f"Modelfile.{slug}"
-    mf.write_text(f"FROM {spec['base_ollama']}\nADAPTER {gguf}\nTEMPLATE \"{{{{ .Prompt }}}}\"\n"
+        base, downloaded = base_weights(spec, t, log)
+        merged = t / "merged" / slug
+        if not (merged / "config.json").exists():
+            log.info("… merging the adapter into the base weights (fp16, CPU; about 15 GB of memory, several minutes)")
+            script = t / "merge_lora.py"
+            script.write_text(MERGE)
+            _run([py, script, base, adir, merged], log, timeout=3 * 3600)
+        log.info(f"… converting the merged model to GGUF {outtype}")
+        gguf.parent.mkdir(parents=True, exist_ok=True)
+        _run([py, repo / "convert_hf_to_gguf.py", merged, "--outtype", outtype, "--outfile", gguf], log, timeout=3 * 3600,
+             quiet=True)
+        shutil.rmtree(merged)                       # 15 GB, rebuilt from the adapter if ever needed
+        if downloaded and not spec.get("keep_base", False):
+            shutil.rmtree(base)
+    mf = t / "gguf" / f"Modelfile.{slug}"
+    mf.write_text(f"FROM {gguf}\nTEMPLATE \"{{{{ .Prompt }}}}\"\n"
                   "PARAMETER temperature 0\nPARAMETER stop <|endoftext|>\nPARAMETER stop <|file_sep|>\n")
     _run(["ollama", "create", name, "-f", mf], log, timeout=3600, quiet=True)
     smoke = requests.post(f"{ollama_url()}/api/generate", timeout=600, json={
@@ -164,10 +222,12 @@ def build_custom(cfg, spec: dict, log):
     prov_path = t / "custom_models.json"
     prov = json.loads(prov_path.read_text()) if prov_path.exists() else {}
     prov[name] = {"hf_repo": spec["hf_repo"], "revision": spec["revision"], "base_hf": spec["base_hf"],
-                  "base_ollama": spec["base_ollama"], "adapter_sha256": file_sha256(adir / "adapter_model.safetensors"),
-                  "gguf_sha256": file_sha256(gguf), "llama_cpp": cfg["setup"]["llama_cpp"]["ref"], "created": now_iso(),
+                  "adapter_sha256": file_sha256(adir / "adapter_model.safetensors"), "gguf": str(gguf),
+                  "gguf_sha256": file_sha256(gguf), "outtype": outtype, "method": "peft merge_and_unload (fp16) + convert_hf_to_gguf",
+                  "llama_cpp": cfg["setup"]["llama_cpp"]["ref"], "created": now_iso(),
                   "lora": {k: acfg.get(k) for k in ("r", "lora_alpha", "target_modules")}}
     write_json(prov_path, prov)
+    gguf.unlink()          # Ollama keeps its own copy; the GGUF is rebuilt from the adapter if ever needed (sha256 above)
     log.info(f"✓ custom model {name} built and registered in Ollama")
 
 
@@ -235,6 +295,26 @@ def _smoke_pharo(home, p, log):
     log.info("✓ Pharo validation image ready (VM evaluates 3 + 4 = 7)")
 
 
+def image_globals(cfg, log):
+    """The global names (classes, traits, globals) of the clean Pharo image: the method filter "requires
+    dependencies" flags methods that reference a class neither their project nor a standard Pharo defines."""
+    p = cfg["pharo"]
+    home = resolve(p["dir"])
+    out_path = home / "globals.txt"
+    if out_path.exists() and out_path.stat().st_size > 1000:
+        log.info(f"✓ Pharo image globals ({sum(1 for _ in out_path.open())} names)")
+        return
+    script = "String streamContents: [ :s | (Smalltalk globals keys asSortedCollection: [ :a :b | a <= b ]) do: [ :k | s nextPutAll: k; nextPut: Character lf ] ]"
+    tmp = home / ".globals.st"
+    tmp.write_text(f"| f | f := '{out_path}' asFileReference. f ensureDelete. f writeStreamDo: [ :w | w nextPutAll: ({script}) ]. Smalltalk exitSuccess.")
+    _run([home / "pharo", p["image"], "st", tmp], log, cwd=home, timeout=300, quiet=True)
+    tmp.unlink()
+    n = sum(1 for _ in out_path.open()) if out_path.exists() else 0
+    if n < 1000:
+        raise SetupError(f"the Pharo image listed only {n} globals")
+    log.info(f"✓ Pharo image globals: {n} names → {out_path}")
+
+
 # ---------------------------------------------------------------------------------------------- data
 def data(cfg, log):
     import urllib.error
@@ -246,7 +326,7 @@ def data(cfg, log):
         except urllib.error.HTTPError as e:
             if b.get("gated"):
                 log.warning(f"! benchmark {b['name']}: gated (HTTP {e.code}); set HF_TOKEN in .env and accept its terms "
-                            "on Hugging Face to include it — phase 1 records it as not available")
+                            "on Hugging Face to include it — phase 2 records it as not available")
             else:
                 raise SetupError(f"benchmark {b['name']} cannot be downloaded: HTTP {e.code}") from e
     c = cfg["corpus"]
@@ -272,7 +352,7 @@ def main(cfg: dict) -> int:
     log.info("SETUP — dependencies of every phase")
     steps = [("Ollama models", pull_models), ("custom models", lambda c, l: [build_custom(c, s, l) for s in
                                                                             c.get("setup", {}).get("custom_models", [])]),
-             ("Pharo image", pharo_image), ("data", data)]
+             ("Pharo image", pharo_image), ("Pharo image globals", image_globals), ("data", data)]
     for name, fn in steps:
         try:
             fn(cfg, log)

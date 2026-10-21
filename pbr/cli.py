@@ -2,8 +2,8 @@
 
     python -m pbr run                 every phase in order; a phase already done with the same inputs is skipped
     python -m pbr run 6               phase 6 only (always re-run; LLM answers come from the cache)
-    python -m pbr run 3-7             phases 3 to 7
-    python -m pbr run from 6          phases 6 to 12
+    python -m pbr run 3-7             phases 4 to 8
+    python -m pbr run from 6          phases 7 to 13
     python -m pbr status              one line per phase: status, when, how long, key numbers, stale or not
     python -m pbr logs [6] [-n 60]    the log of the whole pipeline, or of one phase, cleanly
     python -m pbr reset 6             delete what phase 6 produced (human inputs in returned/ are kept)
@@ -21,9 +21,7 @@ import sys
 from .common import (BY_NUM, PHASES, PhaseWaiting, ROOT, STATUS_ICON, _hms, fingerprint, is_up_to_date, load_config,
                      phase_dirname, phase_state, read_jsonl, results_dir, running, show, write_summary, write_text)
 
-MODULES = {1: "p01_literature", 2: "p02_corpus", 3: "p03_sampling", 4: "p04_discovery", 5: "p05_taxonomy",
-           6: "p06_annotation", 7: "p07_validation", 8: "p08_profile", 9: "p09_coverage", 10: "p10_benchmark",
-           11: "p11_verification", 12: "p12_evaluation"}
+MODULES = {num: f"pbr.phases.{key}" for num, key, *_ in PHASES}   # pbr/phases/<name>.py
 
 
 def parse_targets(args: list[str]) -> tuple[list[int], bool]:
@@ -54,7 +52,7 @@ def parse_targets(args: list[str]) -> tuple[list[int], bool]:
 
 def phase_readme(cfg: dict, num: int):
     """results/NN_<phase>/README.md: what the folder holds and how it was made (the phase's documentation)."""
-    mod = importlib.import_module(f"pbr.phases.{MODULES[num]}")
+    mod = importlib.import_module(MODULES[num])
     write_text(results_dir(cfg) / phase_dirname(num) / "README.md",
                f"# Phase {num:02d} — {BY_NUM[num][2]}\n\n```\n{(mod.__doc__ or '').strip()}\n```\n\n"
                f"Status, metrics and the list of files: `_phase.json`. Log: `../logs/{phase_dirname(num)}.log` "
@@ -76,7 +74,7 @@ def run_phases(cfg: dict, phases: list[int], force: bool) -> int:
         stale_up = [u for u in BY_NUM[num][4] if not is_up_to_date(cfg, u)]
         if stale_up and not force:
             print(f"! {num:02d}: upstream phase(s) {stale_up} are stale")
-        mod = importlib.import_module(f"pbr.phases.{MODULES[num]}")
+        mod = importlib.import_module(MODULES[num])
         try:
             with running(cfg, num) as ph:
                 mod.run(ph)

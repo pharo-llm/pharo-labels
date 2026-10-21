@@ -1,11 +1,11 @@
-"""Phase 9 — Literature versus Pharo comparison.
+"""Phase 10 — Literature versus Pharo comparison.
 
 Both classified datasets are joined on the shared behaviour IDs.
 
-* Literature side: the annotation split of phase 6 (literature tasks, one per problem), labelled by the
+* Literature side: the annotation split of phase 7 (literature tasks, one per problem), labelled by the
   AI majority (behaviours given by at least two of the three annotators), replaced by the human reference
-  where phase 7 has one. Share = tasks with the behaviour / literature tasks; also in how many benchmarks.
-* Pharo side: the design-weighted share of phase 8 (with its interval) and the Pharo items of phase 6
+  where phase 8 has one. Share = tasks with the behaviour / literature tasks; also in how many benchmarks.
+* Pharo side: the design-weighted share of phase 9 (with its interval) and the Pharo items of phase 7
   (random design, AI majority) as a second, independent sample.
 
 Status of every behaviour:
@@ -31,15 +31,15 @@ from .. import agreement as A
 from .. import figures as F
 from .. import taxonomy as T
 from ..common import read_json, write_csv
-from .p08_profile import latest_taxonomy
+from .profile import latest_taxonomy
 
 
 def literature_labels(ph, tax) -> pd.DataFrame:
-    items = pd.read_csv(ph.upstream(7, "item_agreement.csv"), converters={"majority": ast.literal_eval})
+    items = pd.read_csv(ph.upstream("validation", "item_agreement.csv"), converters={"majority": ast.literal_eval})
     lit = items[items["source"] == "literature"][["item_id", "group", "majority", "level"]].rename(columns={"group": "benchmark"})
     lit["labels"] = lit["majority"].map(list)
     lit["label_source"] = "AI majority (≥2 of 3)"
-    ref_p = ph.upstream(7, "human_reference_labels.csv")
+    ref_p = ph.upstream("validation", "human_reference_labels.csv")
     if ref_p.exists():
         ref = pd.read_csv(ref_p)
         ref = ref[ref["item_id"].str.startswith("L:") & ref["reference"].notna()]
@@ -47,12 +47,12 @@ def literature_labels(ph, tax) -> pd.DataFrame:
         hit = lit["item_id"].isin(m)
         lit.loc[hit, "labels"] = lit.loc[hit, "item_id"].map(m)
         lit.loc[hit, "label_source"] = "human reference"
-    # one problem counted once (phase 3 already drew one task per problem)
+    # one problem counted once (phase 4 already drew one task per problem)
     return lit
 
 
 def pharo_annotation_labels(ph) -> pd.DataFrame:
-    items = pd.read_csv(ph.upstream(7, "item_agreement.csv"), converters={"majority": ast.literal_eval})
+    items = pd.read_csv(ph.upstream("validation", "item_agreement.csv"), converters={"majority": ast.literal_eval})
     p = items[(items["source"] == "pharo") & (items["purpose"] == "random")]
     return p.assign(labels=p["majority"].map(list))
 
@@ -61,10 +61,10 @@ def run(ph):
     tax = latest_taxonomy(ph)
     v6 = ph.cfg["taxonomy"].get("version", "v1")
     if tax["version"] != v6:
-        ph.warn(f"phase 8 uses taxonomy {tax['version']} while phases 6–7 used {v6}: literature labels are translated "
+        ph.warn(f"phase 9 uses taxonomy {tax['version']} while phases 7–8 used {v6}: literature labels are translated "
                 f"explicitly with the version map (taxonomy.translate), never rewritten")
-    tax6 = T.load(ph.upstream(5, f"taxonomy_{v6}.json"))
-    for u in (6, 7, 8):
+    tax6 = T.load(ph.upstream("taxonomy", f"taxonomy_{v6}.json"))
+    for u in ("annotation", "validation", "profile"):
         if ph.upstream_state(u).get("status") == "provisional":
             ph.mark_provisional(f"phase {u} is provisional (expert input pending)")
             break
@@ -76,10 +76,10 @@ def run(ph):
     p6 = pharo_annotation_labels(ph)
     if tax["version"] != v6:
         p6["labels"] = p6["labels"].map(lambda ids: T.translate(ids, tax6, tax))
-    fq = pd.read_csv(ph.upstream(8, "weighted_frequency.csv"))
+    fq = pd.read_csv(ph.upstream("profile", "weighted_frequency.csv"))
     fq = fq[fq["level"] == "behavior"].set_index("id")
-    prof = pd.read_parquet(ph.upstream(8, "pharo_behavior_profiles.parquet"))
-    ag = read_json(ph.upstream(7, "agreement.json"), {})
+    prof = pd.read_parquet(ph.upstream("profile", "pharo_behavior_profiles.parquet"))
+    ag = read_json(ph.upstream("validation", "agreement.json"), {})
     per_alpha = {k: v.get("alpha") for k, v in (ag.get("per_behavior") or {}).items()}
     n_lit, n_p6, n_prof = len(lit), len(p6), len(prof)
     benchmarks = sorted(lit["benchmark"].unique())

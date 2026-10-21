@@ -28,7 +28,7 @@ import time
 import jsonschema
 import requests
 
-from .common import append_jsonl, now_iso, read_json, results_dir, write_json
+from .common import append_jsonl, now_iso, read_json, resolve, results_dir, write_json
 
 
 class LLMError(RuntimeError):
@@ -106,7 +106,8 @@ class Client:
         self.reference_price = llm.get("reference_price") or {}
         self.limiter = _RateLimiter(float(spec.get("requests_per_minute", llm.get("requests_per_minute", 0)) or 0))
         rd = results_dir(cfg)
-        self.cache_dir = rd / "cache" / "llm" / _slug(f"{self.provider}_{self.model}")
+        # one cache for every profile: answers obtained in a smoke test are reused by the real run
+        self.cache_dir = resolve(cfg["project"].get("cache_dir", "results/cache")) / "llm" / _slug(f"{self.provider}_{self.model}")
         self.ledger = rd / "logs" / "llm_calls.jsonl"
         self._info = None
         self._thinks = False

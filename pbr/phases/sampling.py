@@ -1,4 +1,4 @@
-"""Phase 3 — Representative sampling.
+"""Phase 4 — Representative sampling.
 
 Two kinds of samples, never mixed in an estimate:
 
@@ -8,12 +8,12 @@ Two kinds of samples, never mixed in an estimate:
   random inside each drawn repository. A large repository therefore cannot dominate the sample, and every
   method carries its inclusion probability and design weight
   ``w = (N_h / n_h) × (M_i / m_i)`` (N_h eligible repositories of group h, n_h drawn; M_i eligible methods
-  of repository i, m_i drawn), with which phase 8 estimates corpus-wide shares (Cochran 1977, ch. 10–11).
+  of repository i, m_i drawn), with which phase 9 estimates corpus-wide shares (Cochran 1977, ch. 10–11).
 * **targeted** samples, for discovering rare behaviours: methods that send selectors or reference globals
   of rare areas (``sampling.targeted_signals``). They have no weight and are excluded from frequencies.
 
-Three disjoint splits are drawn with the same design: ``discovery`` (phase 4: build the taxonomy),
-``annotation`` (phase 6–7: measure agreement on data the taxonomy was not built from), ``profile`` (phase 8).
+Three disjoint splits are drawn with the same design: ``discovery`` (phase 5: build the taxonomy),
+``annotation`` (phase 7–8: measure agreement on data the taxonomy was not built from), ``profile`` (phase 9).
 Literature tasks get two disjoint splits too, stratified by benchmark, one problem counted once.
 
 Outputs
@@ -40,35 +40,24 @@ COLS = ["method_id", "repository", "class_name", "side", "selector", "is_test", 
         "duplicate_of", "is_trivial", "sent_selectors", "referenced_globals", "n_statements", "url"]
 
 
-def frame(ph) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """Eligible methods and repositories, with the count of what each rule removed."""
+def frame(ph, subset: str = "production") -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Eligible methods and repositories of one subset — ``production`` (decision keep, + review when
+    method_filters.include_review) or ``test`` (decision keep_test: kept separately) — after the method filters of
+    phase 3, with the count of every decision."""
     s = ph.cfg["sampling"]
-    repos = pd.read_parquet(ph.upstream(2, "repositories.parquet"))
-    m = pd.read_parquet(ph.upstream(2, "methods.parquet"), columns=COLS)
+    repos = pd.read_parquet(ph.upstream("corpus", "repositories.parquet"))
+    m = pd.read_parquet(ph.upstream("corpus", "methods.parquet"), columns=COLS)
+    dec = pd.read_parquet(ph.upstream("corpus", "method_filters.parquet"), columns=["method_id", "decision", "reasons"])
+    m = m.merge(dec, on="method_id", how="left")
     rules = {"methods_in_corpus": int(len(m))}
-    repos = repos[repos["status"] == "included"].copy()
-    if s.get("exclude_mirrors", True):
-        mirrors = set(repos.loc[repos["is_mirror"].astype(bool), "repository"])
-        rules["methods_in_mirror_repositories"] = int(m["repository"].isin(mirrors).sum())
-        m = m[~m["repository"].isin(mirrors)]
-        repos = repos[~repos["repository"].isin(mirrors)]
-    if s.get("exclude_parse_failures", True):
-        bad = m["parse_status"] != "ok"
-        rules["methods_not_parsed"] = int(bad.sum())
-        m = m[~bad]
-    if s.get("exclude_over_long", True):
-        rules["methods_over_long"] = int(m["over_long"].sum())
-        m = m[~m["over_long"]]
-    if s.get("exclude_duplicates", True):
-        # non-canonical copies of non-trivial code are copying (vendored code, forks); a repeated trivial
-        # method (an accessor, `initialize super initialize`) is an idiom and stays
-        dup = m["duplicate_of"].notna() & ~m["is_trivial"]
-        rules["methods_duplicated_non_trivial"] = int(dup.sum())
-        m = m[~dup]
-    if not s.get("include_tests", True):
-        rules["test_methods"] = int(m["is_test"].sum())
-        m = m[~m["is_test"]]
+    rules.update({f"decision_{k}": int(v) for k, v in m["decision"].value_counts().items()})
+    if subset == "test":
+        wanted = {"keep_test"}
+    else:
+        wanted = {"keep", "review"} if ph.cfg["method_filters"].get("include_review", True) else {"keep"}
+    m = m[m["decision"].isin(wanted)]
     rules["eligible_methods"] = int(len(m))
+    repos = repos[repos["status"] == "included"].copy()
     # groups (strata)
     by = s.get("group_by", "domain")
     if by == "none":
@@ -187,7 +176,7 @@ def draw_targeted(ph, m: pd.DataFrame, total: int, used: set, rng, split: str, m
 
 
 def literature(ph, rng) -> tuple[pd.DataFrame, dict]:
-    lit = pd.read_parquet(ph.upstream(1, "literature_tasks.parquet"), columns=["task_uid", "benchmark", "dedup_key", "task_type"])
+    lit = pd.read_parquet(ph.upstream("literature", "literature_tasks.parquet"), columns=["task_uid", "benchmark", "dedup_key", "task_type"])
     used_keys, rows, plan = set(), [], {}
     for split, key in (("discovery", "literature_discovery_per_benchmark"), ("annotation", "literature_annotation_per_benchmark")):
         k = int(ph.sizes[key])
@@ -204,8 +193,10 @@ def literature(ph, rng) -> tuple[pd.DataFrame, dict]:
 
 def run(ph):
     rng = np.random.default_rng(ph.seed)
-    m, repos, rules = frame(ph)
-    ph.log.info("frame: " + ", ".join(f"{k}={v:,}" for k, v in rules.items()))
+    m, repos, rules = frame(ph, "production")
+    mt, repos_t, rules_t = frame(ph, "test")
+    ph.log.info("frame (production methods): " + ", ".join(f"{k}={v:,}" for k, v in rules.items()))
+    ph.log.info(f"test methods, kept separately: {rules_t['eligible_methods']:,} in {rules_t['eligible_repositories']:,} repositories")
     groups = repos.groupby("group").agg(repositories=("repository", "size"), methods=("eligible_methods", "sum"))
     ph.log.info(f"{len(groups)} repository groups: " + ", ".join(f"{g} ({r.repositories})" for g, r in groups.iterrows()))
     masks = {name: signal_mask(m, spec) for name, spec in (ph.cfg["sampling"].get("targeted_signals") or {}).items()}
@@ -216,10 +207,21 @@ def run(ph):
         r = draw_random(ph, m, repos, int(ph.sizes[rkey]), used, rng, split)
         used |= {x["method_id"] for x in r}
         t = draw_targeted(ph, m, int(ph.sizes[tkey]) if tkey else 0, used, rng, split, masks)
-        rows += r + t
+        used |= {x["method_id"] for x in t}
+        tt = draw_random(ph, mt, repos_t, int(ph.sizes.get(f"pharo_{split}_tests", 0)), used, rng, split)
+        used |= {x["method_id"] for x in tt}
+        for x in r + t:
+            x["subset"] = "production"
+        for x in tt:
+            x["subset"] = "test"
+        rows += r + t + tt
         ph.log.info(f"split {split:<10}: {len(r)} random methods from {len({x['repository'] for x in r})} repositories, "
-                    f"{len(t)} targeted")
+                    f"{len(t)} targeted, {len(tt)} test methods (kept separately)")
     sample = pd.DataFrame(rows)
+    why = dict(zip(pd.concat([m["method_id"], mt["method_id"]]), pd.concat([m["decision"], mt["decision"]])))
+    rsn = dict(zip(pd.concat([m["method_id"], mt["method_id"]]), pd.concat([m["reasons"], mt["reasons"]])))
+    sample["filter_decision"] = sample["method_id"].map(why)
+    sample["filter_reasons"] = sample["method_id"].map(rsn)
     assert sample["method_id"].is_unique, "splits must be disjoint"
     write_csv(ph.path("pilot_sample.csv"), sample)
 
@@ -233,7 +235,8 @@ def run(ph):
         "weight_formula": "w = (N_h / n_h) * (M_i / m_i)",
         "estimator": "ratio estimator sum(w*y)/sum(w); variance by linearisation with repositories as PSUs within strata",
         "seed": ph.seed, "profile": ph.cfg["profile_name"], "settings": ph.cfg["sampling"],
-        "frame_rules": rules,
+        "frame_rules": rules, "test_frame": rules_t,
+        "subsets": "production = method filter decision keep (+ review); test = keep_test, sampled separately with the same design",
         "groups": {g: {"eligible_repositories": int(r.repositories), "eligible_methods": int(r.methods)} for g, r in groups.iterrows()},
         "splits": {s: {"random": int(((sample["split"] == s) & (sample["purpose"] == "random")).sum()),
                        "targeted": int(((sample["split"] == s) & (sample["purpose"] == "targeted")).sum()),
@@ -253,7 +256,7 @@ def run(ph):
     ph.metric("literature_annotation", int((lit["split"] == "annotation").sum()))
 
     # ---------------------------------------------------------------- figures
-    rnd = sample[sample["purpose"] == "random"]
+    rnd = sample[(sample["purpose"] == "random") & (sample["subset"] == "production")]
     corpus_share = groups["methods"] / groups["methods"].sum()
     unweighted = rnd.groupby("group").size() / max(len(rnd), 1)
     weighted = rnd.groupby("group")["weight"].sum() / max(rnd["weight"].sum(), 1)

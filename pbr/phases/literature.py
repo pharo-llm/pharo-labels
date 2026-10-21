@@ -1,4 +1,4 @@
-"""Phase 1 — Literature ingestion.
+"""Phase 2 — Literature ingestion.
 
 Imports every task of every existing benchmark (pinned sources of ../labeling-existing-benchmarks, downloaded
 once into ../data/existing-benchmarks/) and records, per task: its source (benchmark, dataset, revision,

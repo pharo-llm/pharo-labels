@@ -170,3 +170,76 @@ def scatter_labeled(x, y, labels, title, xlabel, ylabel, path, *, groups=None, n
     if groups is not None:
         ax.legend(loc="upper left")
     return save(fig, path, note)
+
+
+def taxonomy_tree(blocks: list, title: str, path: Path, ncol: int = 3, note: str | None = None,
+                  last_apart: bool = False) -> Path:
+    """A taxonomy as boxes: one box per category, its subcategories in bold, their behaviours below.
+
+    blocks: [(category label, [(subcategory label, [behaviour, ...]), ...]), ...]. A behaviour is a string, or a
+    dict {"label", "count", "marker"}: ``marker`` (e.g. ●●○, which models proposed it) is drawn first, then a small
+    bar proportional to ``count`` (the items classified under the behaviour; scaled to the largest count of the
+    figure) and the count itself, then the label. Boxes are packed into ``ncol`` columns."""
+    cat_w, sub_w, beh_w = 48, 56, 66
+    counts = [b["count"] for _, subs in blocks for _, bs in subs for b in bs if isinstance(b, dict) and b.get("count") is not None]
+    cmax = max(counts + [1])
+    measured = []
+    for cat, subs in blocks:
+        rows = [("cat", wrap(cat, cat_w), None)]
+        for sub, behs in subs:
+            rows.append(("sub", wrap(sub, sub_w), None))
+            for b in behs:
+                if isinstance(b, dict):
+                    rows.append(("beh", wrap(b["label"], beh_w - (10 if b.get("marker") else 4)), b))
+                else:
+                    rows.append(("beh", wrap(b, beh_w), None))
+        h = 0.6 + sum({"cat": 1.2, "sub": 0.95, "beh": 0.82}[k] * (t.count("\n") + 1) for k, t, _ in rows) + 0.3
+        measured.append((rows, h))
+    cols, colh = [[] for _ in range(ncol)], [0.0] * ncol
+    n_main = len(blocks) - 1 if last_apart else len(blocks)      # last_apart: the last block is drawn after the others
+    order = sorted(range(n_main), key=lambda i: -measured[i][1]) + list(range(n_main, len(blocks)))
+    for i in order:
+        k = int(np.argmin(colh))
+        cols[k].append(i)
+        colh[k] += measured[i][1] + 0.6
+    H = max(colh) or 1
+    fig = plt.figure(figsize=(17, max(5, H * 0.2)))
+    ax = fig.add_axes([0, 0, 1, 0.97])
+    ax.set_xlim(0, ncol)
+    ax.set_ylim(H, 0)
+    ax.axis("off")
+    bar_w = 0.075                                   # width of the largest count's bar (in column units)
+    for k, col in enumerate(cols):
+        y = 0.3
+        for i in col:
+            rows, h = measured[i]
+            ax.add_patch(plt.Rectangle((k + 0.02, y), 0.96, h, facecolor="none", edgecolor=color(i % 8), lw=1.6))
+            yy = y + 0.5
+            for kind, text, item in rows:
+                n = text.count("\n") + 1
+                step = {"cat": 1.2, "sub": 0.95, "beh": 0.82}[kind]
+                x = {"cat": 0.04, "sub": 0.06, "beh": 0.09}[kind]
+                style = {"cat": dict(fontsize=9.5, weight="bold"), "sub": dict(fontsize=8, weight="bold", color=INK_2),
+                         "beh": dict(fontsize=7)}[kind]
+                ymid = yy + step * (n - 1) / 2
+                if item is not None:
+                    xx = k + x
+                    yline = yy                     # the indicator sits on the first line of the label
+                    if item.get("marker"):
+                        ax.text(xx, yline, item["marker"], va="center", fontsize=7, color=INK)
+                        xx += 0.055
+                    c = item.get("count")
+                    if c is not None:
+                        w = bar_w * c / cmax
+                        ax.add_patch(plt.Rectangle((xx, yline - 0.22), max(w, 0.004), 0.44, facecolor=SERIES[0],
+                                                   edgecolor="none"))
+                        ax.add_patch(plt.Rectangle((xx, yline - 0.22), bar_w, 0.44, facecolor="none", edgecolor=GRID, lw=0.6))
+                        ax.text(xx + bar_w + 0.006, yline, str(c), va="center", fontsize=6.5, color=INK_2)
+                        xx += bar_w + 0.04
+                    ax.text(xx, ymid, text, va="center", linespacing=1.15, **style)
+                else:
+                    ax.text(k + x, ymid, text, va="center", linespacing=1.15, **style)
+                yy += step * n
+            y += h + 0.6
+    fig.suptitle(title, fontsize=12, x=0.01, ha="left", weight="bold")
+    return save(fig, path, note)

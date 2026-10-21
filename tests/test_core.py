@@ -10,8 +10,8 @@ import pandas as pd
 from pbr import agreement as A
 from pbr import taxonomy as T
 from pbr import workbook as W
-from pbr.phases.p02_corpus import method_id, strip_comments
-from pbr.phases.p03_sampling import allocate
+from pbr.phases.corpus import method_id, strip_comments
+from pbr.phases.sampling import allocate
 from pbr.pharo import clean_method, gates, method_selector, split_methods
 
 
@@ -59,6 +59,11 @@ class TaxonomyTest(unittest.TestCase):
         names = {b["name"] for b in T.active(v2, "behavior")}
         self.assertEqual(names, {"Read by index", "Read first element", "Positional read", "Write by index"})
         self.assertEqual(len(T.translate(["B001"], t, v2)), 2)
+
+    def test_reject_is_valid(self):
+        v2, problems = T.apply_decisions(small_tax(), [{"id": "B002", "action": "reject", "reviewer": "e"}], "v2", "test")
+        self.assertEqual(problems, [])
+        self.assertEqual(T.translate(["B002"], small_tax(), v2), ["UNKNOWN"])
 
     def test_next_id_respects_registry(self):
         self.assertEqual(T.next_id(small_tax(), "behavior", {"behavior": ["B007"]}), "B008")
@@ -158,7 +163,7 @@ if __name__ == "__main__":
 
 class ValidationAnalysisTest(unittest.TestCase):
     def test_item_table_metrics_and_human_vs_ai(self):
-        from pbr.phases import p07_validation as V
+        from pbr.phases import validation as V
         tax = small_tax()
         tax["behaviors"].append({"id": "B003", "name": "Write by index", "definition": "set at a position",
                                  "subcategory_id": "S001", "category_id": "C001", "status": "active"})
@@ -186,7 +191,60 @@ class ValidationAnalysisTest(unittest.TestCase):
         self.assertEqual(hv["ai_majority"]["primary_behavior_correct_by_ai_agreement_level"]["full"], 1.0)
 
     def test_parse_ids(self):
-        from pbr.phases.p07_validation import parse_ids
+        from pbr.phases.validation import parse_ids
         ids, bad = parse_ids(["B001 Retrieve", "unknown", "B999 x", None], {"B001"})
         self.assertEqual(ids, ["B001", "UNKNOWN"])
         self.assertEqual(bad, ["B999 x"])
+
+
+class RepositoryScoreTest(unittest.TestCase):
+    def test_transforms_saturate(self):
+        from pbr.phases.repositories import transform
+        self.assertEqual(transform(0, "log", 10), 0.0)
+        self.assertAlmostEqual(transform(10, "log", 10), 1.0)
+        self.assertEqual(transform(1000, "log", 10), 1.0)
+        self.assertEqual(transform(0.15, "ratio", 0.3), 0.5)
+        self.assertEqual(transform(None, "ratio", 1), 0.0)
+
+    def test_maintenance(self):
+        from datetime import datetime, timezone
+        from pbr.phases.repositories import maintenance
+        cfg = {"maintenance_full_span_years": 2, "recency_full_years": 2, "recency_zero_years": 8}
+        ref = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        self.assertEqual(maintenance("2020-01-01T00:00:00Z", "2026-01-01T00:00:00Z", ref, cfg), 1.0)
+        self.assertEqual(maintenance("2010-01-01T00:00:00Z", "2015-01-01T00:00:00Z", ref, cfg), 0.0)
+        self.assertAlmostEqual(maintenance("2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z", ref, cfg), 0.5, places=2)
+
+    def test_originality_oldest_is_original(self):
+        from pbr.phases.repositories import originality
+        df = pd.DataFrame({"repository": ["new", "old"], "hashes": [["a", "b", "c", "d"], ["a", "b"]]})
+        o = dict(zip(df["repository"], originality(df, {"old": "2015", "new": "2020"})))
+        self.assertEqual(o["old"], 1.0)
+        self.assertEqual(o["new"], 0.5)
+
+
+class MethodFilterTest(unittest.TestCase):
+    def stm(self, src):
+        from pbr.method_filters import body_statements
+        return body_statements(strip_comments(src))
+
+    def test_statements(self):
+        self.assertEqual(self.stm("at: i put: v\n\t| x |\n\tx := i + 1.\n\tarray at: x put: v.\n\t^ v"),
+                         ["x := i + 1", "array at: x put: v", "^ v"])
+        self.assertEqual(self.stm("foo\n\t\"a comment.\"\n\t^ #(1 2. 3)"), ["^ #(1 2. 3)"])
+        self.assertEqual(self.stm("bar\n\t<primitive: 1>\n\t^ 'a.b'"), ["^ 'a.b'"])
+        self.assertEqual(self.stm("empty\n\t\"nothing\""), [])
+
+    def test_rules(self):
+        from pbr.method_filters import CONST_RE, INIT_STMT_RE, PLACEHOLDER_RE
+        for s in ("^ 42", "^ 'Pharo'", "^ #name", "^ true", "^ nil", "^ #(1 2 3)", "^ $a"):
+            self.assertTrue(CONST_RE.match(s), s)
+        for s in ("^ x", "^ self foo", "^ 1 + 2"):
+            self.assertFalse(CONST_RE.match(s), s)
+        for s in ("self subclassResponsibility", "^ self subclassResponsibility", "self shouldBeImplemented", "^ self",
+                  "self error: 'Not yet implemented'"):
+            self.assertTrue(PLACEHOLDER_RE.match(s), s)
+        self.assertFalse(PLACEHOLDER_RE.match("self error: 'empty stack'"))
+        for s in ("super initialize", "items := OrderedCollection new", "count := 0", "name := 'x'"):
+            self.assertTrue(INIT_STMT_RE.match(s), s)
+        self.assertFalse(INIT_STMT_RE.match("items := self defaultItems collect: [ :e | e copy ]"))

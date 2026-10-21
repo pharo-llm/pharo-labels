@@ -1,22 +1,22 @@
-"""Phase 8 — Large-scale Pharo behaviour analysis.
+"""Phase 9 — Large-scale Pharo behaviour analysis.
 
-The ``profile`` split (random design of phase 3, disjoint from the taxonomy and annotation data) is
+The ``profile`` split (random design of phase 4, disjoint from the taxonomy and annotation data) is
 classified with the latest taxonomy (v2 when the experts corrected v1, else v1) by the profile model(s):
-``profile.models: auto`` picks the annotator closest to the experts (micro F1, phase 7), or — without
+``profile.models: auto`` picks the annotator closest to the experts (micro F1, phase 8), or — without
 expert labels — the one agreeing most with the other two (mean pairwise κ); a list of names uses those
 models and their majority.
 
-Estimates (sampling design considered, phase 3):
+Estimates (sampling design considered, phase 4):
 * per behaviour / subcategory / category: methods in the sample, unweighted share, **design-weighted
   share** with a 95% interval (ratio estimator; linearisation variance, repositories = PSUs within groups);
 * **repository prevalence**: share of sampled repositories in which the behaviour was observed (a lower
   bound: only a few methods per repository are sampled);
 * **differences across repository groups** (weighted shares per group; χ² test of independence on counts,
   an approximation that ignores the clustering);
-* **rare** (weighted share < ``profile.rare_share``) and **important** (expert relevance ≥ 4, phase 7) behaviours;
+* **rare** (weighted share < ``profile.rare_share``) and **important** (expert relevance ≥ 4, phase 8) behaviours;
 * **unknown and uncertain** classifications (UNKNOWN, INSUFFICIENT, high uncertainty, low confidence) and
   the missing behaviours the models described;
-* **PPI correction** when expert labels exist (phase 7): category shares corrected for the model's errors
+* **PPI correction** when expert labels exist (phase 8): category shares corrected for the model's errors
   (Angelopoulos et al. 2023; the expert items are weighted by their stratum weight).
 
 Outputs: pharo_behavior_profiles.parquet, weighted_frequency.csv, repository_prevalence.csv,
@@ -36,15 +36,15 @@ from .. import taxonomy as T
 from ..common import read_json, read_jsonl, write_csv, write_parquet
 from ..items import load_items
 from ..llm import Client, ledger_summary
-from .p06_annotation import classify, flatten, latest_raw
+from .annotation import classify, flatten, latest_raw
 
 
 def latest_taxonomy(ph) -> dict:
-    d7 = ph.upstream(7)
+    d7 = ph.upstream("validation")
     versions = sorted(d7.glob("taxonomy_v*.json"), key=lambda p: int(re.sub(r"\D", "", p.stem) or 0))
     if versions:
         return T.load(versions[-1])
-    return T.load(ph.upstream(5, f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json"))
+    return T.load(ph.upstream("taxonomy", f"taxonomy_{ph.cfg['taxonomy'].get('version', 'v1')}.json"))
 
 
 def choose_models(ph) -> tuple[list[str], str]:
@@ -52,12 +52,12 @@ def choose_models(ph) -> tuple[list[str], str]:
     names = [a["name"] for a in ph.cfg["llm"]["annotators"]]
     if isinstance(want, list):
         return want, "configured"
-    hv = read_json(ph.upstream(7, "human_vs_ai.json"), {}) or {}
+    hv = read_json(ph.upstream("validation", "human_vs_ai.json"), {}) or {}
     scores = {m: (hv.get(m) or {}).get("micro", {}).get("f1") for m in names}
     if any(v is not None for v in scores.values()):
         best = max(names, key=lambda m: scores[m] or -1)
         return [best], f"highest micro F1 against the expert reference ({scores})"
-    ag = read_json(ph.upstream(7, "agreement.json"), {})
+    ag = read_json(ph.upstream("validation", "agreement.json"), {})
     pw = ag.get("overall", {}).get("pairwise_cohen_primary_behavior", {})
     mean = {m: float(np.mean([v for k, v in pw.items() if m in k.split("~") and v is not None] or [0])) for m in names}
     best = max(names, key=lambda m: mean[m])
@@ -68,17 +68,17 @@ def run(ph):
     tax = latest_taxonomy(ph)
     models, why = choose_models(ph)
     ph.log.info(f"taxonomy {tax['version']} ({tax['status']}); profile model(s) {models}: {why}")
-    for u in (5, 6, 7):
+    for u in ("taxonomy", "annotation", "validation"):
         if ph.upstream_state(u).get("status") == "provisional":
             ph.mark_provisional(f"phase {u} is provisional (it waits for expert input)")
             break
     items = load_items(ph, "profile", include_targeted=False)
-    items = items[items["source"] == "pharo"]
+    items = items[(items["source"] == "pharo") & (items["subset"] == "production")]   # frequencies: production code
     raw_path = ph.path("annotations_raw.jsonl")
     specs = {a["name"]: a for a in ph.cfg["llm"]["annotators"]}
     for m in models:
-        classify(ph, Client(specs[m], ph.cfg), tax, items, raw_path, "08_profile")
-    raw = [r for r in latest_raw(read_jsonl(raw_path), tax["version"]) if r["model"] in models and r["item_id"] in set(items["item_id"])]
+        classify(ph, Client(specs[m], ph.cfg), tax, items, raw_path, ph.key)
+    raw = [r for r in latest_raw(read_jsonl(raw_path), tax) if r["model"] in models and r["item_id"] in set(items["item_id"])]
     ann = flatten(raw)
     if len(models) > 1:      # majority of the profile models
         rows = []
@@ -99,7 +99,7 @@ def run(ph):
     write_parquet(ph.path("pharo_behavior_profiles.parquet"), prof)
 
     rel = {}
-    rp = ph.upstream(7, "behavior_relevance.csv")
+    rp = ph.upstream("validation", "behavior_relevance.csv")
     if rp.exists():
         r = pd.read_csv(rp)
         rel = dict(zip(r["behavior_id"], r["relevance_pharo"]))
@@ -124,12 +124,12 @@ def run(ph):
     fq["rare_but_important"] = fq["rare"] & (fq["relevance_pharo"].fillna(0) >= 4)
     fq["not_observed"] = fq["methods"] == 0
 
-    # PPI: category shares corrected with the expert reference (phase 7), Pharo items only
-    ref_p = ph.upstream(7, "human_reference_labels.csv")
+    # PPI: category shares corrected with the expert reference (phase 8), Pharo items only
+    ref_p = ph.upstream("validation", "human_reference_labels.csv")
     if ref_p.exists() and len(models) == 1:
         ref = pd.read_csv(ref_p)
         ref = ref[ref["item_id"].str.startswith("P:") & ref["reference"].notna()]
-        a6 = pd.read_parquet(ph.upstream(6, "annotations_validated.parquet"))
+        a6 = pd.read_parquet(ph.upstream("annotation", "annotations_validated.parquet"))
         a6 = a6[(a6["model"] == models[0]) & (a6["taxonomy_version"] == tax["version"])]
         if len(ref) and len(a6):
             j = ref.merge(a6[["item_id", "category_ids"]], on="item_id")
@@ -193,7 +193,7 @@ def run(ph):
     ph.metric("behaviors_rare", int(beh["rare"].sum()))
     ph.metric("unknown_weighted_share", fq.loc[(fq["level"] == "behavior") & (fq["id"] == T.UNKNOWN), "weighted_share"].iloc[0])
     ph.metric("uncertain_items", int(len(unk)))
-    ph.metric("llm", ledger_summary(ph.cfg, "08_profile"))
+    ph.metric("llm", ledger_summary(ph.cfg, ph.key))
     figures(ph, fq, gdf, prof, tax)
 
 

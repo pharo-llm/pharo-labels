@@ -9,3 +9,4 @@ results/
 **/results/.snapshot_staging/
 # downloads and built tools (./run.sh setup recreates them)
 data/
+results-smoke/

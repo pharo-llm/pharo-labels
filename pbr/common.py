@@ -31,25 +31,37 @@ ROOT = Path(__file__).resolve().parents[1]
 # ---------------------------------------------------------------------------------------------- phases
 # number, key (folder results/NN_key), title, config sections read, upstream phases, human inputs (folders
 # relative to the phase folder whose files change the fingerprint)
-PHASES = [
-    (1, "literature", "Literature ingestion", ["literature"], [], []),
-    (2, "corpus", "Pharo corpus preparation", ["corpus"], [], []),
-    (3, "sampling", "Representative sampling", ["sampling"], [1, 2], []),
-    (4, "discovery", "Taxonomy discovery (3 independent LLMs)", ["llm", "discovery"], [1, 2, 3], []),
-    (5, "taxonomy", "Shared taxonomy construction", ["llm", "taxonomy"], [4], ["review/returned"]),
-    (6, "annotation", "Independent structured annotation", ["llm", "annotation"], [1, 2, 3, 5], []),
-    (7, "validation", "AI agreement and expert validation", ["validation"], [5, 6],
+_PHASES = [   # dependencies are written by name; numbers exist only here (renumbering = editing this table)
+    (1, "repositories", "Repository selection (weighted quality score)", ["repositories", "corpus"], [], []),
+    (2, "literature", "Literature ingestion", ["literature"], [], []),
+    (3, "corpus", "Pharo corpus preparation and method filters", ["corpus", "method_filters"], ["repositories"], []),
+    (4, "sampling", "Representative sampling", ["sampling"], ["literature", "corpus"], []),
+    (5, "discovery", "Taxonomy discovery (3 independent LLMs)", ["llm", "discovery"], ["literature", "corpus", "sampling"], []),
+    (6, "taxonomy", "Shared taxonomy construction", ["llm", "taxonomy"], ["discovery"], ["review/returned"]),
+    (7, "annotation", "Independent structured annotation", ["llm", "annotation"],
+     ["literature", "corpus", "sampling", "taxonomy"], []),
+    (8, "validation", "AI agreement and expert validation", ["validation"], ["taxonomy", "annotation"],
      ["expert/returned", "adjudication/returned"]),
-    (8, "profile", "Large-scale Pharo behaviour analysis", ["llm", "annotation", "profile"], [2, 3, 5, 6, 7], []),
-    (9, "coverage", "Literature versus Pharo comparison", ["coverage"], [6, 7, 8], []),
-    (10, "benchmark", "Pharo benchmark construction", ["benchmark"], [2, 5, 6, 9], ["selected_behaviors.csv"]),
-    (11, "verification", "Benchmark validation (execution + experts)", ["pharo", "benchmark"], [10], ["expert/returned"]),
-    (12, "evaluation", "Model evaluation", ["pharo", "evaluation"], [5, 11], []),
+    (9, "profile", "Large-scale Pharo behaviour analysis", ["llm", "annotation", "profile"],
+     ["corpus", "sampling", "taxonomy", "annotation", "validation"], []),
+    (10, "coverage", "Literature versus Pharo comparison", ["coverage"], ["annotation", "validation", "profile"], []),
+    (11, "benchmark", "Pharo benchmark construction", ["benchmark"], ["corpus", "taxonomy", "annotation", "coverage"],
+     ["selected_behaviors.csv"]),
+    (12, "verification", "Benchmark validation (execution + experts)", ["pharo", "benchmark"], ["benchmark"], ["expert/returned"]),
+    (13, "evaluation", "Model evaluation", ["pharo", "evaluation"], ["taxonomy", "verification"], []),
 ]
+BY_KEY = {p[1]: p[0] for p in _PHASES}
+PHASES = [(n, k, t, sec, [BY_KEY[d] for d in deps], human) for n, k, t, sec, deps, human in _PHASES]
 BY_NUM = {p[0]: p for p in PHASES}
 
 
-def phase_dirname(num: int) -> str:
+def num_of(phase) -> int:
+    """A phase given by number or by name (``"annotation"``) → its number."""
+    return phase if isinstance(phase, int) else BY_KEY[phase]
+
+
+def phase_dirname(phase) -> str:
+    num = num_of(phase)
     return f"{num:02d}_{BY_NUM[num][1]}"
 
 
@@ -61,7 +73,9 @@ def load_config(path: Path | None = None, profile: str | None = None) -> dict:
     if profile not in cfg["profiles"]:
         raise SystemExit(f"Unknown PROFILE {profile!r}: choose one of {', '.join(cfg['profiles'])}")
     cfg["profile_name"] = profile
-    cfg["sizes"] = cfg["profiles"][profile]
+    cfg["sizes"] = dict(cfg["profiles"][profile])
+    if cfg["sizes"].get("results_dir"):          # a profile with its own results folder (e.g. smoke)
+        cfg["project"]["results_dir"] = cfg["sizes"].pop("results_dir")
     return cfg
 
 
@@ -256,16 +270,17 @@ class Phase:
     def figure(self, name: str) -> Path:
         return self.path("figures", name)
 
-    def upstream(self, num: int, *parts) -> Path:
-        """A file of an earlier phase; the phase must have been run."""
+    def upstream(self, phase, *parts) -> Path:
+        """A file of an earlier phase (given by name or number); the phase must have been run."""
+        num = num_of(phase)
         d = results_dir(self.cfg) / phase_dirname(num)
         state = read_json(d / "_phase.json") or {}
         if state.get("status") not in ("done", "provisional"):
             raise SystemExit(f"Phase {num} ({BY_NUM[num][2]}) has not been run: ./run.sh {num}")
         return d.joinpath(*parts)
 
-    def upstream_state(self, num: int) -> dict:
-        return read_json(results_dir(self.cfg) / phase_dirname(num) / "_phase.json") or {}
+    def upstream_state(self, phase) -> dict:
+        return read_json(results_dir(self.cfg) / phase_dirname(phase) / "_phase.json") or {}
 
     def warn(self, msg: str):
         self.warnings.append(msg)

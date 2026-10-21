@@ -1,6 +1,6 @@
-"""Phase 5 — Shared taxonomy construction.
+"""Phase 6 — Shared taxonomy construction.
 
-1. **Flatten** the three candidate taxonomies of phase 4 into concepts (model, level, name, definition,
+1. **Flatten** the three candidate taxonomies of phase 5 into concepts (model, level, name, definition,
    rules, example items, parent).
 2. **Candidate groups** per level: sentence embeddings of "name: definition" (config ``llm.embedder``),
    agglomerative clustering (average linkage, cosine) at the loose ``taxonomy.candidate_threshold``,
@@ -74,18 +74,19 @@ def partition_validator(n: int):
 # ---------------------------------------------------------------------------------------------- flatten
 def flatten(cands: dict) -> pd.DataFrame:
     rows = []
-    for model, cand in cands.items():
+    for (model, source), cand in cands.items():
+        tag = f"{model}/{source}"
         for c in cand.get("categories", []):
-            ck = f"{model}|C|{c['name']}"
-            rows.append({"key": ck, "model": model, "level": "category", "name": c["name"], "definition": c["definition"],
+            ck = f"{tag}|C|{c['name']}"
+            rows.append({"key": ck, "model": model, "source": source, "level": "category", "name": c["name"], "definition": c["definition"],
                          "parent": None, "include": [], "exclude": [], "examples": [], "evidence": [], "n_items": 0})
             for s in c.get("subcategories", []):
-                sk = f"{model}|S|{c['name']}|{s['name']}"
-                rows.append({"key": sk, "model": model, "level": "subcategory", "name": s["name"],
+                sk = f"{tag}|S|{c['name']}|{s['name']}"
+                rows.append({"key": sk, "model": model, "source": source, "level": "subcategory", "name": s["name"],
                              "definition": s["definition"], "parent": ck, "include": [], "exclude": [], "examples": [],
                              "evidence": [], "n_items": 0})
                 for b in s.get("behaviors", []):
-                    rows.append({"key": f"{model}|B|{c['name']}|{s['name']}|{b['name']}", "model": model,
+                    rows.append({"key": f"{tag}|B|{c['name']}|{s['name']}|{b['name']}", "model": model, "source": source,
                                  "level": "behavior", "name": b["name"], "definition": b["definition"], "parent": sk,
                                  "include": b.get("include", []), "exclude": b.get("exclude", []),
                                  "examples": b.get("examples", []), "evidence": b.get("evidence", []),
@@ -95,16 +96,16 @@ def flatten(cands: dict) -> pd.DataFrame:
         known = {r["key"] for r in rows}
         for p in cand.get("unassigned_proposals", []):
             c, s, b = (str(x).strip() for x in p["label"])
-            ck, sk = f"{model}|C|{c}", f"{model}|S|{c}|{s}"
+            ck, sk = f"{tag}|C|{c}", f"{tag}|S|{c}|{s}"
             if ck not in known:
-                rows.append({"key": ck, "model": model, "level": "category", "name": c, "definition": c, "parent": None,
+                rows.append({"key": ck, "model": model, "source": source, "level": "category", "name": c, "definition": c, "parent": None,
                              "include": [], "exclude": [], "examples": [], "evidence": [], "n_items": 0})
                 known.add(ck)
             if sk not in known:
-                rows.append({"key": sk, "model": model, "level": "subcategory", "name": s, "definition": f"{s} ({c})",
+                rows.append({"key": sk, "model": model, "source": source, "level": "subcategory", "name": s, "definition": f"{s} ({c})",
                              "parent": ck, "include": [], "exclude": [], "examples": [], "evidence": [], "n_items": 0})
                 known.add(sk)
-            rows.append({"key": f"{model}|B|{c}|{s}|{b}", "model": model, "level": "behavior", "name": b,
+            rows.append({"key": f"{tag}|B|{c}|{s}|{b}", "model": model, "source": source, "level": "behavior", "name": b,
                          "definition": f"{b} ({c} › {s}); proposal not organised by the model's consolidation",
                          "parent": sk, "include": [], "exclude": [], "examples": list(p.get("items", []))[:8],
                          "evidence": [], "n_items": len(p.get("items", []))})
@@ -174,12 +175,13 @@ def assign_ids(clusters: dict, level: str, registry: dict) -> dict:
 def run(ph):
     names = [a["name"] for a in ph.cfg["llm"]["annotators"]]
     cands = {}
-    for n in names:
-        c = read_json(ph.upstream(4, n, "candidate_taxonomy.json"))
-        if not c or not c.get("categories"):
-            ph.warn(f"{n}: no usable candidate taxonomy (phase 4) — left out of the merge")
-            continue
-        cands[n] = c
+    for n in names:                       # one candidate taxonomy per model and per source (phase 5)
+        for src in ("pharo", "literature"):
+            c = read_json(ph.upstream("discovery", n, src, "taxonomy.json"))
+            if not c or not c.get("categories"):
+                ph.warn(f"{n}/{src}: no usable candidate taxonomy (phase 5) — left out of the merge")
+                continue
+            cands[(n, src)] = c
     if len(cands) < 2:
         raise RuntimeError("fewer than two candidate taxonomies: cannot build a shared one")
     df = flatten(cands)
@@ -207,11 +209,11 @@ def run(ph):
         rows_ = list(g.itertuples())
         parts = None
         if len(rows_) > 1:
-            members = "\n".join(f"{i}. [{r.model}] {r.name}: {r.definition}"
+            members = "\n".join(f"{i}. [{r.model}, from {r.source}] {r.name}: {r.definition}"
                                  + (f" | use when: {'; '.join(r.include)}" if len(r.include) else "")
                                  for i, r in enumerate(rows_, 1))
             ans = editor.ask(system=EDIT_SYSTEM, user=f"Level: {lv}\nMembers:\n{members}", schema=EDIT_SCHEMA,
-                             max_tokens=400 + 260 * len(rows_), prompt_version=PROMPT_VERSION, phase="05_taxonomy",
+                             max_tokens=400 + 260 * len(rows_), prompt_version=PROMPT_VERSION, phase=ph.key,
                              item_id=gname, validator=partition_validator(len(rows_)))
             if ans.valid:
                 parts = [([rows_[m - 1] for m in c["members"]], c, True) for c in ans.data["concepts"]]
@@ -267,11 +269,12 @@ def run(ph):
         sims = emb[idx] @ centroid
         pair = [float(emb[a] @ emb[b]) for a, b in combinations(idx, 2)]
         models = sorted(set(g["model"]))
+        sources = sorted(set(g["source"]))
         examples = list(dict.fromkeys(e for ex in g["examples"] for e in ex))
         evidence = [e for ev in g["evidence"] for e in ev][:4]
         concepts[cid] = {"id": cid, "level": lv, "cluster": cl, "name": str(text["name"]).strip(),
                          "definition": str(text["definition"]).strip(), "include": text.get("include", []),
-                         "exclude": text.get("exclude", []), "proposed_by": models, "n_models": len(models),
+                         "exclude": text.get("exclude", []), "proposed_by": models, "n_models": len(models), "sources": sources,
                          "aliases": sorted(set(g["name"])), "examples": [{"item_id": e} for e in examples[:10]],
                          "evidence": evidence, "n_items": int(g["n_items"].sum()),
                          "edited_by_model": text["edited_by_model"], "same_meaning": True,
@@ -300,7 +303,7 @@ def run(ph):
     cat_of_sub = {}
     for cl, cid in ids.items():
         c = concepts[cid]
-        base = {k: c[k] for k in ("id", "name", "definition", "include", "exclude", "proposed_by", "aliases",
+        base = {k: c[k] for k in ("id", "name", "definition", "include", "exclude", "proposed_by", "sources", "aliases",
                                   "examples", "evidence", "n_items", "edited_by_model", "same_meaning")}
         base["status"] = "active"
         if c["level"] == "category":
@@ -314,7 +317,7 @@ def run(ph):
         if c["level"] == "behavior":
             sid = ids[parent_cluster[cl]]
             draft["behaviors"].append({**{k: c[k] for k in ("id", "name", "definition", "include", "exclude",
-                                                            "proposed_by", "aliases", "examples", "evidence",
+                                                            "proposed_by", "sources", "aliases", "examples", "evidence",
                                                             "n_items", "edited_by_model", "same_meaning")},
                                        "subcategory_id": sid, "category_id": cat_of_sub[sid], "status": "active",
                                        "min_models_met": c["n_models"] >= int(ph.cfg["taxonomy"]["min_models_for_behavior"])})
@@ -353,8 +356,8 @@ def run(ph):
         write_csv(ph.path("review", "decisions_imported.csv"), pd.DataFrame(decisions))
     else:
         if ph.cfg["taxonomy"].get("require_review"):
-            raise PhaseWaiting("fill results/05_taxonomy/review/taxonomy_review.xlsx (sheet 'Taxonomy Review', "
-                               "column 'action'; your name in README!B3) and save it in results/05_taxonomy/review/returned/")
+            raise PhaseWaiting("fill results/06_taxonomy/review/taxonomy_review.xlsx (sheet 'Taxonomy Review', "
+                               "column 'action'; your name in README!B3) and save it in results/06_taxonomy/review/returned/")
         v1 = T.clone(draft)
         v1.update(version=version, parent_version="v0-draft", status="draft-unreviewed", created=now_iso())
         ph.mark_provisional("taxonomy_v1 is the automatic merge: no expert decision in review/returned/ yet "
@@ -380,9 +383,9 @@ def run(ph):
     ph.metric("candidate_groups_split_by_editor", int(sum(c["group_split"] for c in concepts.values())))
     ph.metric("near_miss_pairs", int(len(near_df)))
     ph.metric("review_decisions", len(decisions))
-    ph.metric("llm", ledger_summary(ph.cfg, "05_taxonomy"))
+    ph.metric("llm", ledger_summary(ph.cfg, ph.key))
 
-    figures(ph, v1, df, ids, list(cands))
+    figures(ph, v1, df, ids, names)
 
 
 HARM_SYSTEM = """You restructure a draft taxonomy of programming behaviours merged from three annotators. Keep it faithful: never invent concepts, only merge existing ones (by their IDs) and rename survivors. Language-neutral names. Answer with JSON only."""
@@ -429,7 +432,7 @@ def harmonize(ph, editor, draft: dict) -> dict:
         lines.append(f"{c['id']} {c['name']} ({nb} behaviours): {c['definition']} | subcategories: "
                      + "; ".join(s["name"] for s in subs))
     ans = editor.ask(system=HARM_SYSTEM, schema=CAT_SCHEMA, max_tokens=3000, prompt_version=PROMPT_VERSION,
-                     phase="05_taxonomy", item_id="harmonize-categories",
+                     phase=ph.key, item_id="harmonize-categories",
                      validator=_merge_validator({"C": {c["id"] for c in cats}}),
                      user=f"There are {len(cats)} categories; merge them into at most {maxc} broad categories of programming "
                           "(merge a small or overlapping category into the broader one that contains it). A category that is "
@@ -462,7 +465,7 @@ def harmonize(ph, editor, draft: dict) -> dict:
             text.append(f"{sc['id']} {sc['name']}: {sc['definition']}")
             text += [f"    {b['id']} {b['name']}: {b['definition']}" for b in behs if b["subcategory_id"] == sc["id"]]
         ans = editor.ask(system=HARM_SYSTEM, schema=WITHIN_SCHEMA, max_tokens=2500, prompt_version=PROMPT_VERSION,
-                         phase="05_taxonomy", item_id=f"harmonize-{c['id']}",
+                         phase=ph.key, item_id=f"harmonize-{c['id']}",
                          validator=_merge_validator({"S": {x["id"] for x in subs}, "B": {b["id"] for b in behs}}),
                          user=f"Category {c['id']} {c['name']}: {c['definition']}\nIts subcategories (S...) and behaviours (B...):\n"
                               + "\n".join(text) + "\n\nMerge subcategories that mean the same thing or are too small to stand "
@@ -526,7 +529,7 @@ def write_review_workbook(ph, draft, near_df, sim_df):
             ("comment", "comment", 30, True)]
     # the expert's parent (move / add) goes in a column whose header is "parent_id"; the read-only one is renamed
     cols[2] = ("parent_id", "current_parent", 9, False)
-    wb = W.new_workbook("Taxonomy review (phase 5)", [
+    wb = W.new_workbook("Taxonomy review (phase 6)", [
         "You review the shared taxonomy built from three AI models' independent proposals. Each row is one concept "
         "(category C…, subcategory S…, behaviour B…). Grey columns are read-only; fill the yellow ones.",
         "action: accept (or leave empty) · rename (new_name) · redefine (new_definition, include, exclude) · "
@@ -579,50 +582,25 @@ def guidelines(tax: dict) -> str:
 
 
 def figures(ph, tax, df, ids, models):
-    # taxonomy overview: categories with their subcategories and behaviour counts
-    cats = T.active(tax, "category")
-    subs = T.active(tax, "subcategory")
-    behs = T.active(tax, "behavior")
+    # taxonomy overview: categories with their subcategories and behaviours; ●○ = which share of the models proposed it
+    cats, subs, behs = T.active(tax, "category"), T.active(tax, "subcategory"), T.active(tax, "behavior")
     blocks = []
     for c in cats:
         lines = []
-        for s in [s for s in subs if s["category_id"] == c["id"]]:
-            bs = [b for b in behs if b["subcategory_id"] == s["id"]]
-            lines.append((s, bs))
-        blocks.append((c, lines))
-    ncol = 3
-    heights = [1.6 + sum(1 + len(bs) * 0.85 for _, bs in lines) for _, lines in blocks]
-    cols = [[] for _ in range(ncol)]
-    colh = [0.0] * ncol
-    for blk, h in sorted(zip(blocks, heights), key=lambda t: -t[1]):
-        k = int(np.argmin(colh))
-        cols[k].append((blk, h))
-        colh[k] += h + 0.6
-    H = max(colh) or 1
-    fig = F.plt.figure(figsize=(17, max(6, H * 0.2)))
-    ax = fig.add_axes([0, 0, 1, 0.97])
-    ax.set_xlim(0, ncol)
-    ax.set_ylim(H, 0)
-    ax.axis("off")
-    for k, col in enumerate(cols):
-        y = 0.4
-        for (c, lines), h in col:
-            i = cats.index(c)
-            ax.add_patch(F.plt.Rectangle((k + 0.02, y - 0.2), 0.96, h, facecolor="none", edgecolor=F.color(i % 8), lw=1.6))
-            ax.text(k + 0.04, y + 0.5, F.wrap(f"{c['id']} {c['name']}", 48), fontsize=9.5, weight="bold", va="center")
-            y += 1.6
-            for s, bs in lines:
-                ax.text(k + 0.06, y, F.wrap(f"{s['id']} {s['name']}", 56), fontsize=8, weight="bold", color=F.INK_2, va="center")
-                y += 1
-                for b in bs:
-                    dots = "●" * len(b.get("proposed_by", [])) + "○" * max(0, len(models) - len(b.get("proposed_by", [])))
-                    ax.text(k + 0.09, y, f"{dots}  {b['id']} {b['name']}"[:78], fontsize=7, va="center")
-                    y += 0.85
-            y += 0.6
-    fig.suptitle(f"Taxonomy {tax['version']} ({tax['status']}): {len(cats)} categories, {len(subs)} subcategories, "
-                 f"{len(behs)} behaviours   ● = proposed by one model ({len(models)} models)", fontsize=12, x=0.01,
-                 ha="left", weight="bold")
-    F.save(fig, ph.figure(f"taxonomy_{tax['version']}.png"))
+        for s_ in [x for x in subs if x["category_id"] == c["id"]]:
+            bl = []
+            for b in [b for b in behs if b["subcategory_id"] == s_["id"]]:
+                n = len(b.get("proposed_by", []))
+                src = b.get("sources") or []
+                tag = " [P+L]" if len(src) > 1 else " [P]" if src == ["pharo"] else " [L]" if src == ["literature"] else ""
+                bl.append({"marker": "●" * n + "○" * max(0, len(models) - n), "count": int(b.get("n_items") or 0),
+                           "label": f"{b['id']} {b['name']}{tag}"})
+            lines.append((f"{s_['id']} {s_['name']}", bl))
+        blocks.append((f"{c['id']} {c['name']}", lines))
+    F.taxonomy_tree(blocks, f"Shared taxonomy {tax['version']} ({tax['status']}): {len(cats)} categories, {len(subs)} "
+                    f"subcategories, {len(behs)} behaviours   ● = proposed by one model ({len(models)} models); bar = items; "
+                    "[P] Pharo, [L] literature, [P+L] both",
+                    ph.figure(f"taxonomy_{tax['version']}.png"))
 
     # model overlap: share of model A's behaviours that were merged with one of model B's
     b = df[(df["level"] == "behavior") & df["cluster"].isin(ids)]

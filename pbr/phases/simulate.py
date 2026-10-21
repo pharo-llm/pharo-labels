@@ -2,10 +2,10 @@
 before real experts answer. It is never a validation: the reviewer is named ``SIMULATED-not-a-human``, every
 phase that reads it warns and stays provisional. Delete ``*/returned/SIMULATED*.xlsx`` before real use.
 
-    ./run.sh simulate-expert 7     fills results/07_validation/expert/returned/SIMULATED.xlsx
-    ./run.sh simulate-expert 11    fills results/11_verification/expert/returned/SIMULATED.xlsx
+    ./run.sh simulate-expert validation     fills results/08_validation/expert/returned/SIMULATED.xlsx
+    ./run.sh simulate-expert verification   fills results/12_verification/expert/returned/SIMULATED.xlsx
 
-Phase 7 simulation: for each item, the AI majority label with probability 0.7, otherwise another behaviour of
+Validation simulation: for each item, the AI majority label with probability 0.7, otherwise another behaviour of
 the same category (or any) — so human/AI metrics are neither perfect nor random. Relevance ratings random.
 """
 from __future__ import annotations
@@ -17,20 +17,21 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from .. import taxonomy as T
-from ..common import phase_dirname, results_dir
+from ..common import BY_NUM, num_of, phase_dirname, results_dir
 
 REVIEWER = "SIMULATED-not-a-human"
 
 
 def main(cfg: dict, args: list[str]) -> int:
-    num = int(args[0]) if args else 7
+    arg = (args[0] if args else "validation")
+    key = BY_NUM[int(arg)][1] if arg.isdigit() else arg
     rng = np.random.default_rng(int(cfg["project"]["seed"]) + 99)
-    if num == 7:
-        d = results_dir(cfg) / phase_dirname(7)
+    if key == "validation":
+        d = results_dir(cfg) / phase_dirname("validation")
         src = d / "expert" / "expert_workbook.xlsx"
         if not src.exists():
-            raise SystemExit("run phase 7 first (it writes expert/expert_workbook.xlsx)")
-        tax = T.load(results_dir(cfg) / phase_dirname(5) / f"taxonomy_{cfg['taxonomy'].get('version', 'v1')}.json")
+            raise SystemExit("run the validation phase first (it writes expert/expert_workbook.xlsx)")
+        tax = T.load(results_dir(cfg) / phase_dirname("taxonomy") / f"taxonomy_{cfg['taxonomy'].get('version', 'v1')}.json")
         items = pd.read_csv(d / "item_agreement.csv", converters={"majority": ast.literal_eval}).set_index("item_id")
         names = {b["id"]: f"{b['id']} {b['name']}" for b in T.active(tax, "behavior")}
         by_cat = {}
@@ -60,11 +61,11 @@ def main(cfg: dict, args: list[str]) -> int:
             ws.cell(r, col["relevance_pharo"]).value = str(int(rng.integers(1, 6)))
             ws.cell(r, col["relevance_benchmark"]).value = str(int(rng.integers(1, 6)))
         out = d / "expert" / "returned" / "SIMULATED.xlsx"
-    elif num == 11:
-        d = results_dir(cfg) / phase_dirname(11)
+    elif key == "verification":
+        d = results_dir(cfg) / phase_dirname("verification")
         src = d / "expert" / "benchmark_review.xlsx"
         if not src.exists():
-            raise SystemExit("run phase 11 first (it writes expert/benchmark_review.xlsx)")
+            raise SystemExit("run the verification phase first (it writes expert/benchmark_review.xlsx)")
         wb = load_workbook(src)
         wb["README"]["B3"] = REVIEWER
         ws = wb["Benchmark Task Validation"]
@@ -76,8 +77,8 @@ def main(cfg: dict, args: list[str]) -> int:
             ws.cell(r, col["decision"]).value = "accept" if rng.random() < 0.85 else "revise"
         out = d / "expert" / "returned" / "SIMULATED.xlsx"
     else:
-        raise SystemExit("simulate-expert 7 | 11")
+        raise SystemExit("simulate-expert validation | verification")
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
-    print(f"wrote {out} (reviewer {REVIEWER}). Rerun ./run.sh {num} to import it; delete it before real use.")
+    print(f"wrote {out} (reviewer {REVIEWER}). Rerun ./run.sh {key} to import it; delete it before real use.")
     return 0

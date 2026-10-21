@@ -1,7 +1,7 @@
-"""Phase 11 — Benchmark validation.
+"""Phase 12 — Benchmark validation.
 
 **Execution** (isolated image, resource limits, no network: pbr/pharo.py). Each candidate that executed
-in phase 10 is run again with the full checks, every one a fact observed in the image, in this order
+in phase 11 is run again with the full checks, every one a fact observed in the image, in this order
 (the first failure is the rejection reason): installs · hermetic · enough tests · reference passes
 ``pharo.repeat`` times (once in reverse order) · fail-to-pass (each target replaced by a stub fails a test)
 · mutation score ≥ ``pharo.min_mutation_score`` (MuTalk).
@@ -31,8 +31,8 @@ from .. import pharo as P
 from .. import taxonomy as T
 from .. import workbook as W
 from ..common import now_iso, read_jsonl, write_csv, write_json, write_jsonl, write_text
-from .p08_profile import latest_taxonomy
-from .p10_benchmark import tonel_like
+from .profile import latest_taxonomy
+from .benchmark import tonel_like
 
 
 def public_view(task: dict, rec: dict, variant: str, extra: dict) -> dict:
@@ -85,9 +85,9 @@ def pick_mutant(result: dict, task: dict) -> dict | None:
 
 def run(ph):
     tax = latest_taxonomy(ph)
-    cands = [c for c in read_jsonl(ph.upstream(10, "benchmark_candidates.jsonl")) if c["validation_status"] == "executes"]
-    if ph.upstream_state(10).get("status") == "provisional":
-        ph.mark_provisional("candidates come from a provisional phase 10")
+    cands = [c for c in read_jsonl(ph.upstream("benchmark", "benchmark_candidates.jsonl")) if c["validation_status"] == "executes"]
+    if ph.upstream_state("benchmark").get("status") == "provisional":
+        ph.mark_provisional("candidates come from a provisional phase 11")
     runner = P.Runner(ph.cfg, ph.log.info)
     ph.log.info(f"{len(cands)} candidates to verify; image {runner.info.get('system_version', '?')}, sandbox {runner.sandbox}, "
                 f"{runner.workers} images in parallel")
@@ -199,7 +199,7 @@ def write_review(ph, tax, verified, gdf):
                      "reference": "\n\n".join(m["source"] for m in t["context_methods"] + t["target_methods"]),
                      "tests": "\n\n".join(x["source"] for x in t["tests"]), "seed": c["provenance"]["seed_url"],
                      "mutation_score": r.get("mutation_score"), "variants": ", ".join(c["task_types"])})
-    wb = W.new_workbook("Benchmark task validation (phase 11)", [
+    wb = W.new_workbook("Benchmark task validation (phase 12)", [
         "Each row is a task that passed every execution gate (installs, hermetic, tests pass 3× incl. reversed, "
         "fail-to-pass, mutation score). Rate 1 (poor) to 5 (excellent): clarity of the statement, correctness of the "
         "reference, realism (is this what Pharo developers do?), quality of the tests.",

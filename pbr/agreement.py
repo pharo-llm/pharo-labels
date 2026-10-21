@@ -1,4 +1,4 @@
-"""Agreement and estimation statistics (phases 7, 8, 9).
+"""Agreement and estimation statistics (phases 8, 9, 10).
 
 Agreement between annotators (models or experts):
 * ``krippendorff_alpha`` — any number of annotators, missing answers allowed, any distance: nominal for

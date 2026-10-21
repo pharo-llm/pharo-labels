@@ -5,22 +5,40 @@
 # results/NN_*/_phase.json no longer matches); LLM answers already obtained are never asked again.
 
 project:
-  results_dir: results                     # one sub-folder per phase: results/01_literature ... results/12_evaluation
+  results_dir: results                     # one sub-folder per phase: results/01_repositories ... results/13_evaluation
+  cache_dir: results/cache                 # LLM answers, shared by every profile (never asked twice)
   data_dir: data                           # downloads and built tools (git-ignored; ./run.sh setup fills it)
   seed: 42
 
 # ------------------------------------------------------------------ sample sizes (per profile)
 profiles:
   pilot:                                   # the first deliverable (§8): small, runs on a laptop in a few hours
-    literature_discovery_per_benchmark: 3  # literature tasks shown to each model in phase 4, per benchmark
-    pharo_discovery: 48                    # Pharo methods shown to each model in phase 4 (random design)
-    pharo_discovery_targeted: 12           # + targeted methods (rare behaviours), phase 4
-    literature_annotation_per_benchmark: 4 # phase 6
-    pharo_annotation: 60                   # phase 6, random design (frequency estimation)
-    pharo_annotation_targeted: 12          # phase 6, targeted (discovery of rare behaviours, never weighted)
-    expert_items: 40                       # phase 7: items in the expert workbook (stratified by AI agreement)
-    pharo_profile: 150                     # phase 8: larger random sample, classified by the profile model(s)
-    benchmark_candidates: 20               # phase 10
+    literature_discovery_per_benchmark: 3  # literature tasks shown to each model in phase 5, per benchmark
+    pharo_discovery: 48                    # Pharo methods shown to each model in phase 5 (random design)
+    pharo_discovery_targeted: 12           # + targeted methods (rare behaviours), phase 5
+    literature_annotation_per_benchmark: 4 # phase 7
+    pharo_annotation: 60                   # phase 7, random design (frequency estimation)
+    pharo_annotation_targeted: 12          # phase 7, targeted (discovery of rare behaviours, never weighted)
+    expert_items: 40                       # phase 8: items in the expert workbook (stratified by AI agreement)
+    pharo_profile: 150                     # phase 9: larger random sample, classified by the profile model(s)
+    pharo_discovery_tests: 12              # test methods (kept separately), phase 5
+    pharo_annotation_tests: 12             # test methods (kept separately), phase 7
+    pharo_profile_tests: 0                 # frequencies are estimated on production methods only
+    benchmark_candidates: 20               # phase 11
+  smoke:                                   # a few items only, to check that every phase works (PROFILE=smoke ./run.sh)
+    results_dir: results-smoke             # its own results folder (never mixed with a real run)
+    literature_discovery_per_benchmark: 1
+    pharo_discovery: 8
+    pharo_discovery_targeted: 2
+    pharo_discovery_tests: 2
+    literature_annotation_per_benchmark: 1
+    pharo_annotation: 8
+    pharo_annotation_targeted: 2
+    pharo_annotation_tests: 2
+    expert_items: 6
+    pharo_profile: 10
+    pharo_profile_tests: 0
+    benchmark_candidates: 2
   full:
     literature_discovery_per_benchmark: 10
     pharo_discovery: 300
@@ -30,9 +48,41 @@ profiles:
     pharo_annotation_targeted: 60
     expert_items: 200
     pharo_profile: 3000
+    pharo_discovery_tests: 60
+    pharo_annotation_tests: 60
+    pharo_profile_tests: 0
     benchmark_candidates: 100
 
-# ------------------------------------------------------------------ phase 1: literature
+# ------------------------------------------------------------------ phase 1: repositories (selection of the Pharo projects)
+repositories:
+  # Every repository of the corpus snapshot (the 1,585 that passed mining filter 1) gets a quality score in [0, 1]:
+  # the weighted sum of criteria scores (each in [0, 1]), after the reaper framework (Munaiah et al., EMSE 2017).
+  # The score only decides which repositories are studied; it is never used as importance or sampling weight.
+  hard_filters:
+    exclude_forks: true                    # GitHub forks (Kalliamvakou et al. 2014: most forks are copies)
+    max_duplicated_share: 0.5              # mirrors: share of non-trivial methods copied from an older repository
+    min_methods: 1                         # parsed Pharo methods
+  threshold: 0.50                          # at least half of the maximum weighted score (threshold_sensitivity.png: other values)
+  # criterion: weight (they sum to 1), and how the raw value becomes a score in [0, 1]:
+  #   log: min(1, log(1+x) / log(1+cap))   — diminishing returns, saturating at cap
+  #   ratio: min(1, x / cap)               — a share, saturating at cap
+  criteria:
+    community:     {weight: 0.15, metric: contributors,        transform: log,   cap: 10}
+    history:       {weight: 0.15, metric: commits,             transform: log,   cap: 500}
+    unit_testing:  {weight: 0.15, metric: test_method_share,   transform: ratio, cap: 0.30}
+    maintenance:   {weight: 0.10, metric: maintenance,         transform: ratio, cap: 1.0}   # span (≥ 2 years) × recency (2 → 8 years)
+    documentation: {weight: 0.10, metric: class_comment_share, transform: ratio, cap: 0.50}
+    size:          {weight: 0.10, metric: non_test_methods,    transform: log,   cap: 2000}
+    originality:   {weight: 0.05, metric: originality,         transform: ratio, cap: 1.0}
+    license:       {weight: 0.05, metric: has_license,         transform: ratio, cap: 1.0}
+    issues:        {weight: 0.05, metric: open_issues,         transform: log,   cap: 20}
+    loadability:   {weight: 0.05, metric: has_baseline,        transform: ratio, cap: 1.0}
+    popularity:    {weight: 0.05, metric: stars_and_forks,     transform: log,   cap: 50}
+  maintenance_full_span_years: 2           # development span (created → last push) that earns the full span score
+  recency_full_years: 2                    # last push within this many years of the snapshot: full recency
+  recency_zero_years: 8                    # ... older than this: zero recency
+
+# ------------------------------------------------------------------ phase 2: literature
 literature:
   loader: pbr/benchmarks.py                # pinned sources of every benchmark + their download
   # Benchmark-level evaluation task type (the second, independent classification of §2). It is a property
@@ -63,13 +113,17 @@ setup:
       hf_repo: pharo-llm/Qwen2.5-Coder-7B-PT
       revision: checkpoint-15400        # the final checkpoint (epoch 5 of 5); "main" holds only the README
       base_hf: unsloth/Qwen2.5-Coder-7B # the base the adapter was trained on (its adapter_config.json)
-      base_ollama: "qwen2.5-coder:7b-base-q8_0"   # the same weights in Ollama (8-bit: close to the training precision)
+      # Ollama (>= 0.40) no longer applies LoRA adapters: the adapter is merged into the base weights (peft, fp16),
+      # the merged model converted to GGUF, and that GGUF registered in Ollama
+      outtype: q8_0                     # GGUF precision (8-bit: close to the training precision)
+      base_local_dirs:                  # local copies of base_hf, used only if every weight file's sha256 matches the Hub
+        - ~/.cache/hf_adapter_to_ollama/base_model
   llama_cpp:
     repo: https://github.com/ggml-org/llama.cpp
-    ref: b6100                          # pinned release: only its Python converter is used (no build)
+    ref: b6100                          # pinned release: only its Python converter (convert_hf_to_gguf.py) is used
   tools_dir: data/tools                 # llama.cpp checkout, conversion venv, converted adapters
 
-# ------------------------------------------------------------------ phase 2: Pharo corpus
+# ------------------------------------------------------------------ phase 3: Pharo corpus
 corpus:
   snapshot_repo: pharo-llm/pharo-labels    # Hugging Face dataset written by ../labeling-pharo-repos (parsed methods)
   snapshot_revision: snapshot-20261010-182354
@@ -77,17 +131,19 @@ corpus:
   max_source_chars: 6000                   # longer methods are kept but flagged (generated code, image dumps)
   trivial_max_statements: 1                # accessors / one-statement methods are flagged `is_trivial`
 
-# ------------------------------------------------------------------ phase 3: sampling
+method_filters:                            # phase 3: decision for every method (rules and reasons: pbr/method_filters.py)
+  long_method_lines: 60                    # longer methods are kept but marked "review" (they need more context)
+  include_review: true                     # review methods (forwarding, non-trivial initialisation, long, external
+                                           # dependencies) are sampled, marked with their reasons; false = left out
+
+# ------------------------------------------------------------------ phase 4: sampling
 sampling:
   group_by: domain                         # repository groups (strata): domain | size | none
   min_group_repos: 8                       # smaller domains are pooled into "other"
   allocation: equal                        # methods per group: equal (every group equally visible) | proportional
   methods_per_repo: 2                      # stage 2: methods drawn per sampled repository and per split (caps large repos)
-  exclude_mirrors: true                    # repositories that are mostly copies of another one
-  include_tests: true                      # test methods are real Pharo code and matter for test generation
-  exclude_duplicates: true                 # only canonical copies of duplicated methods
-  exclude_parse_failures: true
-  exclude_over_long: true
+  # which methods are eligible is decided by the method filters of phase 3 (method_filters); test methods are a
+  # separate pool, sampled with the same design at their own sizes (profiles: pharo_<split>_tests)
   # targeted sampling: rare behaviours we want to see at least once (never used for frequencies)
   targeted_signals:
     exceptions:      {selectors: ["on:do:", "ensure:", "ifCurtailed:", "signal:", "retry", "pass"]}
@@ -102,15 +158,15 @@ sampling:
     database:        {globals: ["SQLite3Connection", "VOMongoRepository", "GlorpSession"]}
     parsing:         {globals: ["PP2Node", "PPParser", "RBParser"]}
 
-# ------------------------------------------------------------------ LLM annotation engine (phases 4, 5, 6, 8, 10, 12)
+# ------------------------------------------------------------------ LLM annotation engine (phases 6, 7, 8, 10, 12, 13)
 llm:
   # Three annotators of three families, never shown each other's answers (§4).
   annotators:
     - {name: qwen,    provider: ollama, model: "qwen3.8:27b",          family: Alibaba}
     - {name: gemma,   provider: ollama, model: "gemma4:31b",           family: Google}
     - {name: mistral, provider: ollama, model: "mistral-small3.2:24b", family: Mistral AI}
-  editor: {name: qwen, provider: ollama, model: "qwen3.8:27b"}   # writes definitions of merged concepts (phase 5)
-  embedder: {provider: ollama, model: "nomic-embed-text"}         # concept similarity (phase 5)
+  editor: {name: qwen, provider: ollama, model: "qwen3.8:27b"}   # writes definitions of merged concepts (phase 6)
+  embedder: {provider: ollama, model: "nomic-embed-text"}         # concept similarity (phase 6)
   temperature: 0
   num_ctx: 16384
   timeout_seconds: 600
@@ -123,12 +179,12 @@ llm:
   # what the same calls would cost on a hosted API, for the report (USD / million tokens)
   reference_price: {name: "Claude Haiku 5.5", input: 0.10, output: 0.50}
 
-# ------------------------------------------------------------------ phase 4: discovery
+# ------------------------------------------------------------------ phase 5: discovery
 discovery:
   batch_size: 6                            # items per prompt (each model sees the same batches)
   max_behaviors_per_item: 3
 
-# ------------------------------------------------------------------ phase 5: shared taxonomy
+# ------------------------------------------------------------------ phase 6: shared taxonomy
 taxonomy:
   # Embeddings only PROPOSE: concepts whose "name: definition" embeddings are this similar (cosine, average
   # linkage) form a candidate group; the editor model then decides which members mean the same thing
@@ -140,40 +196,40 @@ taxonomy:
   max_group_size: 9                        # larger candidate groups are re-split with a stricter threshold
   max_categories: 16                       # harmonisation: the editor merges categories down to this number
   min_models_for_behavior: 1               # a behaviour proposed by fewer models is kept but marked
-  require_review: false                    # true = phase 5 stops until results/05_taxonomy/review/returned/ has a decision file
+  require_review: false                    # true = phase 6 stops until results/06_taxonomy/review/returned/ has a decision file
   version: v1
 
-# ------------------------------------------------------------------ phase 6: annotation
+# ------------------------------------------------------------------ phase 7: annotation
 annotation:
   max_behaviors_per_item: 3
   context: class                           # method only | class (superclass, instance variables, class comment)
 
-# ------------------------------------------------------------------ phase 7: agreement + experts
+# ------------------------------------------------------------------ phase 8: agreement + experts
 validation:
   expert_strata: {full: 0.25, partial: 0.40, none: 0.35}   # share of expert items by AI agreement level
   blind: true                              # AI predictions hidden in the expert workbook (revealed only in adjudication)
 
-# ------------------------------------------------------------------ phase 8: large-scale profile
+# ------------------------------------------------------------------ phase 9: large-scale profile
 profile:
   models: auto                             # auto = the annotator closest to the experts (else to the AI majority); or a list of names
   rare_share: 0.01                         # behaviours below this weighted share are "rare"
 
-# ------------------------------------------------------------------ phase 9: coverage
+# ------------------------------------------------------------------ phase 10: coverage
 coverage:
   min_support: 2                           # fewer observations = "investigate"
   confidence: 0.95
 
-# ------------------------------------------------------------------ phase 10: benchmark construction
+# ------------------------------------------------------------------ phase 11: benchmark construction
 benchmark:
   author: {name: qwen, provider: ollama, model: "qwen3.8:27b"}
-  selection: auto                          # auto = from the coverage matrix; or a CSV with behavior_id (results/10_benchmark/selected_behaviors.csv)
+  selection: auto                          # auto = from the coverage matrix; or a CSV with behavior_id (results/11_benchmark/selected_behaviors.csv)
   statuses: [pharo_only, both]             # coverage statuses eligible for selection (auto)
   seeds_per_behavior: 2
   task_types: [code_generation, code_completion, bug_repair]
   pharo_version: "13"
   repair_rounds: 2                         # a candidate that fails execution is shown its errors and rewritten
 
-# ------------------------------------------------------------------ phase 11: execution / validation
+# ------------------------------------------------------------------ phase 12: execution / validation
 pharo:
   dir: data/pharo-image                    # VM + validation image (Pharo 13 + MuTalk + PharoBench-Support), built by setup
   version: "130"                           # get.pharo.org: Pharo 13 image and VM
@@ -189,7 +245,7 @@ pharo:
   min_mutation_score: 0.6                  # MuTalk: share of mutants the tests kill
   min_tests: 3
 
-# ------------------------------------------------------------------ phase 12: evaluation
+# ------------------------------------------------------------------ phase 13: evaluation
 evaluation:
   models:
     - {name: reference, provider: reference}               # the reference solutions: must score 100%
@@ -197,5 +253,7 @@ evaluation:
     - {name: gemma4-31b, provider: ollama, model: "gemma4:31b"}
     # the Pharo PT model is a pre-trained (base) model, not a chat model: asked in plain completion mode
     - {name: pharo-pt-7b, provider: ollama, model: "pharo-llm/Qwen2.5-Coder-PT:7b", mode: completion}
+    # control: the PT model's own base, asked the same way (PT − base = what Pharo pre-training adds)
+    - {name: qwen2.5-coder-7b-base, provider: ollama, model: "qwen2.5-coder:7b-base-q8_0", mode: completion}
   samples_per_task: 1                      # pass@1, greedy
   max_tokens: 1500
