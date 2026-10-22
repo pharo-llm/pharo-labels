@@ -358,7 +358,7 @@ def build(ph, src: str):
         wts_ = np.maximum(g["size"].to_numpy(dtype=float), 1.0)       # members weighted by the items they classify
         centroid = (emb[idx] * wts_[:, None]).sum(axis=0)
         centroid /= np.linalg.norm(centroid) or 1
-        sims = emb[idx] @ centroid
+        to_centroid = emb[idx] @ centroid
         pair = [pair_sim(a, b) for a, b in combinations(list(g.index), 2)]
         jac = [len(df.at[a, "item_set"] & df.at[b, "item_set"]) / max(len(df.at[a, "item_set"] | df.at[b, "item_set"]), 1)
                for a, b in combinations(list(g.index), 2)]
@@ -375,7 +375,7 @@ def build(ph, src: str):
                          "edited_by_model": text["edited_by_model"], "same_meaning": True,
                          "candidate_group": text["candidate_group"], "group_split": text["group_split"],
                          "min_pair_similarity": round(min(pair), 3) if pair else None}
-        for r, s_ in zip(g.itertuples(), sims):
+        for r, s_ in zip(g.itertuples(), to_centroid):
             alias_rows.append({"alias": r.name, "model": r.model, "level": lv, "id": cid, "items": int(r.size),
                                "canonical_name": concepts[cid]["name"], "similarity_to_centroid": round(float(s_), 3)})
         if pair:
@@ -725,7 +725,7 @@ def figures(ph, tax, df, ids, models):
     F.heatmap(mat, models, models, "Behaviours of the row model matched by the column model (%)",
               ph.figure("model_overlap.png"), fmt="{:.0f}", vmin=0, vmax=100, cbar_label="%")
 
-    support = Counter(len(x.get("proposed_by", [])) for x in behs)
+    support = Counter(len(x.get("proposed_by", [])) for x in T.active(tax, "behavior"))
     F.barh([f"proposed by {k} model(s)" for k in sorted(support, reverse=True)],
            [support[k] for k in sorted(support, reverse=True)], "How many models proposed each behaviour",
            "behaviours", ph.figure("support_per_behavior.png"),
