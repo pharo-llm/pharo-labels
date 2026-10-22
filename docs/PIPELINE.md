@@ -49,17 +49,19 @@ only at the end, as two comparable taxonomies.*
 and writes the tasks (phase 11). gemma writes the behaviour contracts. gemma and mistral write the independent tests
 (phase 12), so none of these checks comes from the family that wrote the tasks. Phase 13 evaluates the three.
 
-**Status.** Stage 1 runs with `./run.sh`. The stage 2 code is in the repository (phases 11–12 were tested end to
-end on hand-written tasks in the real image), but it still expects one shared taxonomy instead of the two of phase
-6, so `./run.sh` stops after phase 6.
+**Status.** `./run.sh` runs all 13 phases. Stage 2 works with one of the two final taxonomies,
+`taxonomy.stage2_source` (default: the Pharo taxonomy), with which it classifies both the Pharo methods and the
+benchmark tasks, so phase 10 compares them on the same behaviour IDs; behaviours found only in the benchmarks
+appear there as UNKNOWN. A smoke run (2026-10-22) went through every phase; its phase 11 author model wrote no task
+that passed its own tests, so phases 12–13 had nothing to validate.
 
 ---
 
 ## How to run it
 
 ```bash
-./run.sh                  # setup, then phases 1–6; what is already done with the same inputs is skipped
-./run.sh 5                # one phase       ./run.sh 3-6   a range       ./run.sh from 4   phases 4..6
+./run.sh                  # setup, then phases 1–13; what is already done with the same inputs is skipped
+./run.sh 5                # one phase       ./run.sh 3-6   a range       ./run.sh from 4   phases 4..13
 ./run.sh status           # where every phase stands       ./run.sh logs 5   the log of a phase
 PROFILE=smoke ./run.sh    # the same pipeline on a few items, in results-smoke/ (a check that takes minutes)
 ```
@@ -302,7 +304,7 @@ category and subcategory counts here are sums; a new run counts distinct items.)
 
 # Stage 2 — validate, compare, build, evaluate (phases 7–13)
 
-*The code of these phases exists but still expects one shared taxonomy; `./run.sh` stops after phase 6.*
+*Stage 2 uses the Pharo taxonomy (`taxonomy.stage2_source`) for both sources.*
 
 Phase 4 draws **disjoint** splits of the Pharo methods with the same design. *discovery* builds the taxonomy
 (phase 5), *annotation* validates it (phases 7–8), and *profile* measures frequencies (phase 9). The benchmark tasks

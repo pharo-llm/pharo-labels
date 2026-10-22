@@ -134,18 +134,25 @@ def seeds_for(ph, bid: str, methods: pd.DataFrame, labels: pd.DataFrame, k: int,
 
 
 def to_task(ans: dict, task_id: str) -> dict:
-    cls = re.sub(r"\W", "", ans.get("class_name") or "") or "PBRTask"
-    if not cls.startswith("PBR"):
-        cls = "PBR" + cls
-    cls = cls[:60] + task_id.split("-")[-1][:6].upper()    # unique across tasks
+    raw = re.sub(r"\W", "", ans.get("class_name") or "") or "PBRTask"
+    base = raw if raw.startswith("PBR") else "PBR" + raw
+    cls = base[:60] + task_id.split("-")[-1][:6].upper()    # unique across tasks
+
+    def fix(m: dict) -> str:
+        """The method source with any `Class >> ` prefix removed, and the author's class name (with or without the
+        PBR prefix) renamed to the unique one, so the code still refers to its own class."""
+        out = P.clean_method(src(m))
+        for name in sorted({raw, base}, key=len, reverse=True):
+            out = re.sub(rf"\b{re.escape(name)}\b", cls, out)
+        return out
     tests = [{"source": f"setUp\n\tsuper setUp.\n\ttask := {cls} new"}]
-    tests += [{"source": src(t)} for t in ans.get("tests", []) if P.method_selector(src(t)) != "setUp"]
-    targets = [{"source": src(m), "selector": P.method_selector(src(m)), "signature": P.method_signature(src(m))}
+    tests += [{"source": fix(t)} for t in ans.get("tests", []) if P.method_selector(fix(t)) != "setUp"]
+    targets = [{"source": fix(m), "selector": P.method_selector(fix(m)), "signature": P.method_signature(fix(m))}
                for m in ans.get("target_methods", [])]
     return {"class": {"name": cls, "superclass": "Object", "instance_variables": [re.sub(r"\W", "", v) for v in ans.get("instance_variables", []) if re.sub(r"\W", "", v)],
                       "comment": ans.get("class_comment", "")},
             "test_class": {"name": cls + "Test", "superclass": "PBTestCase"}, "package": "PharoBenchResearch-Tasks",
-            "target_methods": targets, "context_methods": [{"source": src(m)} for m in ans.get("context_methods", [])],
+            "target_methods": targets, "context_methods": [{"source": fix(m)} for m in ans.get("context_methods", [])],
             "tests": tests, "statement": ans.get("statement", "")}
 
 

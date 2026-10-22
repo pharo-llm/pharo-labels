@@ -179,6 +179,19 @@ class OracleTest(unittest.TestCase):
         self.assertEqual(s, O.audit_sample(tasks, 3, seed=1))
 
 
+class BenchmarkTest(unittest.TestCase):
+    def test_to_task_renames_class_and_strips_prefix(self):
+        from pbr.phases.benchmark import to_task
+        t = to_task({"class_name": "PBRCalc", "target_methods": [{"lines": ["PBRCalc >> double: x", "\t^ x * 2"]}],
+                     "context_methods": [{"lines": ["withValue: v", "\t^ PBRCalc new value: v; yourself"]}],
+                     "tests": [{"lines": ["testNew", "\tself assert: (PBRCalc new double: 2) equals: 4"]}]}, "PBR-B1-ab12cd")
+        self.assertEqual(t["class"]["name"], "PBRCalcAB12CD")
+        self.assertEqual(t["target_methods"][0]["source"], "double: x\n\t^ x * 2")
+        self.assertEqual(t["target_methods"][0]["selector"], "double:")
+        self.assertIn("PBRCalcAB12CD new value: v", t["context_methods"][0]["source"])
+        self.assertIn("(PBRCalcAB12CD new double: 2)", t["tests"][1]["source"])
+
+
 class WorkbookTest(unittest.TestCase):
     def test_roundtrip_keeps_reviewer(self):
         wb = W.new_workbook("t", ["x"])

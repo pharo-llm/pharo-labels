@@ -4,13 +4,14 @@ Which programming behaviours does real Pharo code exhibit, which of them do the 
 on actually test, and how well do LLMs handle the ones that matter in Pharo? This repository answers these
 questions with one reproducible pipeline of 13 phases:
 
-1. **Stage 1 (phases 1–6), runnable today:** from the Pharo repositories mined on GitHub and the tasks of 12
+1. **Stage 1 (phases 1–6):** from the Pharo repositories mined on GitHub and the tasks of 12
    existing benchmarks to **two final taxonomies of programming behaviours**. One is built from real Pharo methods,
    the other from the benchmark tasks. Three LLM annotators of three model families discover each one
    independently until saturation, then the three versions are merged.
-2. **Stage 2 (phases 7–13), written but not yet adapted to the two taxonomies:** validate the taxonomies on new
-   samples (AI agreement and experts), measure how often each behaviour occurs in Pharo, compare Pharo with the
-   benchmarks, build executable Pharo benchmark tasks, validate them, and evaluate models on them.
+2. **Stage 2 (phases 7–13):** with the Pharo taxonomy (`taxonomy.stage2_source`), validate it on new samples (AI
+   agreement and experts), measure how often each behaviour occurs in Pharo, compare Pharo with the benchmarks
+   (both sources are classified with the same behaviours), build executable Pharo benchmark tasks, validate them,
+   and evaluate models on them.
 
 **The whole pipeline, phase by phase, with its figures: [docs/PIPELINE.md](docs/PIPELINE.md).**
 
@@ -19,9 +20,9 @@ questions with one reproducible pipeline of 13 phases:
 ## Run
 
 ```bash
-./run.sh                    # setup, then phases 1–6 in order; a phase already done with the same inputs is skipped,
+./run.sh                    # setup, then phases 1–13 in order; a phase already done with the same inputs is skipped,
                             # an interrupted phase resumes item by item (every LLM answer is cached)
-./run.sh 5                  # one phase          ./run.sh 3-6   a range      ./run.sh from 4   phases 4..6
+./run.sh 5                  # one phase          ./run.sh 3-6   a range      ./run.sh from 4   phases 4..13
 ./run.sh setup              # only the dependencies (done automatically before any phase; SKIP_SETUP=1 skips it)
 ./run.sh status             # one line per phase: ✓ done · ◐ provisional · ⏸ waiting · ✗ failed · (stale)
 ./run.sh logs [5]           # the log of the whole pipeline, or of one phase (its last run), readable
@@ -53,8 +54,9 @@ model, gemma4:31b, takes 19 GB. Profiles: `pilot` (default, small samples), `ful
 | 12 | Benchmark validation | 5 levels: executes · independent oracle · valid mutants · behaviour alignment · audit | audit |
 | 13 | Model evaluation | every model × every task variant (generation, completion, bug repair), in the image | |
 
-`./run.sh` runs phases 1–6. Phases 7–13 still expect one shared taxonomy instead of the two produced by phase 6;
-asking for them says so.
+`./run.sh` runs all 13 phases. Stage 2 classifies both sources with ONE of the two final taxonomies,
+`taxonomy.stage2_source` (default `pharo`): the coverage of phase 10 is then which Pharo behaviours the benchmarks
+test; behaviours found only in the benchmarks appear as UNKNOWN there.
 
 ## Models
 
