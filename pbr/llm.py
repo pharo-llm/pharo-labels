@@ -72,6 +72,14 @@ def extract_json(text: str):
     return None
 
 
+_LEDGER_LOCK = threading.Lock()      # calls may run in parallel threads (compute.llm_parallel)
+
+
+def estimate_tokens(text: str) -> int:
+    """A deliberately high estimate of the tokens of a text (code and JSON: ~3 characters per token)."""
+    return len(text) // 3 + 1
+
+
 class _RateLimiter:
     def __init__(self, rpm: float):
         self.interval = 60.0 / rpm if rpm and rpm > 0 else 0.0
@@ -99,6 +107,8 @@ class Client:
         llm = cfg["llm"]
         self.temperature = float(spec.get("temperature", llm.get("temperature", 0)))
         self.num_ctx = int(spec.get("num_ctx", llm.get("num_ctx", 16384)))
+        self.max_num_ctx = int(spec.get("max_num_ctx", llm.get("max_num_ctx", 65536)))
+        self._ctx = self.num_ctx            # the window in use: only grows (Ollama reloads a model to change it)
         self.timeout = float(llm.get("timeout_seconds", 600))
         self.max_retries = int(llm.get("max_retries", 4))
         self.seed = int(cfg["project"]["seed"])
@@ -110,6 +120,7 @@ class Client:
         self.cache_dir = resolve(cfg["project"].get("cache_dir", "data/llm-cache")) / "llm" / _slug(f"{self.provider}_{self.model}")
         self.ledger = rd / "logs" / "llm_calls.jsonl"
         self._info = None
+        self._info_lock = threading.Lock()
         self._thinks = False
         if self.provider == "ollama":
             self.base = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -125,8 +136,10 @@ class Client:
     # ------------------------------------------------------------------ model identity
     def info(self) -> dict:
         """Model name, provider and version (Ollama: digest, parameter size, quantisation)."""
-        if self._info is not None:
-            return self._info
+        with self._info_lock:
+            return self._info if self._info is not None else self._load_info()
+
+    def _load_info(self) -> dict:
         info = {"name": self.name, "provider": self.provider, "model": self.model, "temperature": self.temperature,
                 "num_ctx": self.num_ctx, "seed": self.seed}
         if self.provider == "ollama":
@@ -147,37 +160,57 @@ class Client:
         return info
 
     # ------------------------------------------------------------------ one call
-    def _post(self, url, payload, headers=None) -> dict:
+    def _post(self, url, payload, headers=None, stream=False) -> dict:
+        """``stream``: Ollama streamed chat; ``timeout_seconds`` is then the longest silence, not the whole answer
+        (a long answer at ~15 tokens/s takes more than 10 minutes but never stops arriving)."""
         last = None
         for attempt in range(self.max_retries + 1):
             self.limiter.wait()
             try:
-                r = requests.post(url, json=payload, headers=headers or {}, timeout=self.timeout)
+                r = requests.post(url, json=payload, headers=headers or {}, timeout=self.timeout, stream=stream)
                 if r.status_code == 429 or r.status_code >= 500:
                     last = LLMError(f"HTTP {r.status_code}: {r.text[:300]}")
                 else:
                     r.raise_for_status()
-                    return r.json()
-            except (requests.ConnectionError, requests.Timeout) as e:
+                    if not stream:
+                        return r.json()
+                    parts, d = [], {}
+                    for ln in r.iter_lines():
+                        if not ln:
+                            continue
+                        d = json.loads(ln)
+                        if "error" in d:
+                            raise LLMError(f"{self.name}: {d['error']}")
+                        parts.append(d.get("message", {}).get("content", ""))
+                        if d.get("done"):
+                            break
+                    if not d.get("done"):
+                        raise requests.ConnectionError("stream ended before the answer was done")
+                    d["message"] = {"role": "assistant", "content": "".join(parts)}
+                    return d
+            except LLMError as e:
+                last = e
+            except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as e:
                 last = e
             except requests.HTTPError as e:
                 raise LLMError(f"{self.name}: HTTP error {e.response.status_code}: {e.response.text[:300]}") from e
             time.sleep(min(60, 2 * 2 ** attempt))
         raise LLMError(f"{self.name}: no answer after {self.max_retries + 1} tries ({last})")
 
-    def _raw(self, system: str, messages: list, schema: dict | None, max_tokens: int) -> tuple[str, dict]:
+    def _raw(self, system: str, messages: list, schema: dict | None, max_tokens: int,
+             num_ctx: int | None = None) -> tuple[str, dict]:
         t0 = time.time()
         if self.provider == "ollama":
             self.info()
-            payload = {"model": self.model, "stream": False,
+            payload = {"model": self.model, "stream": True,
                        "messages": ([{"role": "system", "content": system}] if system else []) + messages,
                        "options": {"temperature": self.temperature, "seed": self.seed, "num_predict": max_tokens,
-                                   "num_ctx": self.num_ctx}}
+                                   "num_ctx": num_ctx or self.num_ctx}}
             if schema:
                 payload["format"] = schema
             if self._thinks:
                 payload["think"] = False
-            d = self._post(f"{self.base}/api/chat", payload)
+            d = self._post(f"{self.base}/api/chat", payload, stream=True)
             text = d.get("message", {}).get("content", "")
             usage = {"input_tokens": d.get("prompt_eval_count", 0), "output_tokens": d.get("eval_count", 0),
                      "done_reason": d.get("done_reason")}
@@ -214,16 +247,38 @@ class Client:
         return round((usage.get("input_tokens", 0) * float(prices.get("input", 0))
                       + usage.get("output_tokens", 0) * float(prices.get("output", 0))) / 1e6, 6)
 
+    def context_for(self, system: str, user: str, max_tokens: int) -> int:
+        """The context window for a call: the one in use (``llm.num_ctx`` at first), doubled while the prompt, the
+        answer and one retry (the previous answer and its errors) would not fit, up to ``llm.max_num_ctx``; it then
+        stays (changing it reloads the model). Ollama silently cuts a prompt longer than its window, so a call that
+        cannot fit is an error, never a truncated question. The window does not change an answer that fits, so it
+        is not part of the cache key (``llm.num_ctx`` is)."""
+        need = estimate_tokens(system) + estimate_tokens(user) + max_tokens + 2200
+        with self._info_lock:
+            while self._ctx < need and self._ctx < self.max_num_ctx:
+                self._ctx *= 2
+            if need > self._ctx:
+                raise LLMError(f"{self.name}: a prompt of ~{need - max_tokens - 2200} tokens + {max_tokens} for the "
+                               f"answer does not fit llm.max_num_ctx = {self.max_num_ctx}")
+            return self._ctx
+
     def ask(self, *, system: str, user: str, schema: dict | None = None, max_tokens: int = 1024,
             prompt_version: str = "v1", phase: str = "", item_id: str = "", validator=None) -> Answer:
         """Ask once (cached). ``validator(data) -> list[str]`` adds checks the schema cannot express
         (e.g. an evidence quote must occur in the code)."""
+        num_ctx = self.context_for(system, user, max_tokens) if self.provider == "ollama" else self.num_ctx
         key_obj = {"provider": self.provider, "model": self.model, "system": system, "user": user, "schema": schema,
                    "temperature": self.temperature, "num_ctx": self.num_ctx, "seed": self.seed,
                    "max_tokens": max_tokens, "prompt_version": prompt_version}
         h = hashlib.sha256(json.dumps(key_obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         cpath = self.cache_dir / h[:2] / f"{h}.json"
         cached = read_json(cpath)
+        if cached is not None and self.provider == "ollama":
+            # the cache is keyed by the model's NAME: an answer made by another build of it (another machine, a
+            # re-pulled tag) is asked again, never mixed in
+            old = (cached.get("model_info") or {}).get("digest")
+            if old and old != self.info().get("digest"):
+                cached = None
         if cached is not None:
             return Answer(data=cached.get("data"), text=cached["attempts"][-1]["text"], valid=cached["valid"],
                           errors=cached.get("errors", []), cached=True, attempts=len(cached["attempts"]),
@@ -231,7 +286,7 @@ class Client:
         messages = [{"role": "user", "content": user}]
         attempts, data, errors, total = [], None, [], {"input_tokens": 0, "output_tokens": 0, "latency_s": 0.0}
         for attempt in range(self.max_retries + 1):
-            text, usage = self._raw(system, messages, schema, max_tokens)
+            text, usage = self._raw(system, messages, schema, max_tokens, num_ctx)
             for k in total:
                 total[k] = round(total[k] + (usage.get(k) or 0), 2)
             attempts.append({"text": text, "usage": usage, "time": now_iso()})
@@ -249,6 +304,8 @@ class Client:
                 errors = list(validator(data))[:8]
             if not errors:
                 break
+            if data is None and usage.get("done_reason") == "length":
+                break                       # cut at max_tokens: asking again gives an answer as long, cut again
             if attempt < self.max_retries:
                 messages = messages[:1] + [{"role": "assistant", "content": text[:6000]},
                                            {"role": "user", "content": "Your answer is not valid:\n- " + "\n- ".join(errors)
@@ -258,10 +315,11 @@ class Client:
         record = {"request": key_obj, "request_hash": h, "attempts": attempts, "data": data, "valid": valid,
                   "errors": errors, "usage": total, "model_info": info, "phase": phase, "item_id": item_id}
         write_json(cpath, record)
-        append_jsonl(self.ledger, {"time": now_iso(), "phase": phase, "model": self.name, "item_id": item_id,
-                                   "request_hash": h[:16], "valid": valid, "attempts": len(attempts), **total,
-                                   "cost_usd": self._cost(total, self.prices),
-                                   "reference_cost_usd": self._cost(total, self.reference_price)})
+        with _LEDGER_LOCK:
+            append_jsonl(self.ledger, {"time": now_iso(), "phase": phase, "model": self.name, "item_id": item_id,
+                                       "request_hash": h[:16], "valid": valid, "attempts": len(attempts), **total,
+                                       "cost_usd": self._cost(total, self.prices),
+                                       "reference_cost_usd": self._cost(total, self.reference_price)})
         return Answer(data=data, text=attempts[-1]["text"], valid=valid, errors=errors, cached=False,
                       attempts=len(attempts), usage=total, request_hash=h, model_info=info)
 

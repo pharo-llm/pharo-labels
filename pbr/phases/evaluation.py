@@ -81,7 +81,7 @@ def run(ph):
 
     answers = []
     for cl, info in models:
-        for t in ph.progress(tasks, f"{cl.name}: answers", every_s=60):
+        def one(t, cl=cl):
             if cl.provider == "reference":
                 srcs = t["reference"]
                 usage, valid = {}, True
@@ -93,7 +93,8 @@ def run(ph):
                 except LLMError as e:      # a model that loops or crashes fails this task; the evaluation goes on
                     ph.warn(f"{cl.name} on {t['task_id']}: no answer ({str(e)[:120]}) — counted as a failure")
                     srcs, usage, valid = [], {}, False
-            answers.append({"task_id": t["task_id"], "model": cl.name, "methods": srcs, "usage": usage, "valid": valid})
+            return {"task_id": t["task_id"], "model": cl.name, "methods": srcs, "usage": usage, "valid": valid}
+        answers += ph.pmap(one, tasks, f"{cl.name}: answers")     # compute.llm_parallel requests in flight
     write_jsonl(ph.path("answers.jsonl"), answers)
 
     by_base = {}

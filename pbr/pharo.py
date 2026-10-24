@@ -158,6 +158,19 @@ class Runner:
         self.info["sandbox"] = self.sandbox
 
     def _sandbox_mode(self, mode: str) -> str:
+        if mode != "off" and sys.platform.startswith("linux"):
+            # Linux (e.g. a GPU server): a private network namespace with no interface, via an unprivileged user
+            # namespace (util-linux unshare); unavailable in some containers, then Pharo runs without isolation
+            cmd = ["unshare", "--net", "--map-root-user"]
+            try:
+                if shutil.which("unshare") and subprocess.run(cmd + ["true"], capture_output=True, timeout=20).returncode == 0:
+                    self.prefix = cmd
+                    return "unshare (no network)"
+            except (OSError, subprocess.SubprocessError):
+                pass
+            self.log("unshare --net does not work here (user namespaces disabled?): Pharo runs WITHOUT network "
+                     "isolation — run the pipeline in a container without network, or set pharo.sandbox: off to accept it")
+            return "off"
         if mode == "off" or sys.platform != "darwin" or not shutil.which("sandbox-exec"):
             if mode not in ("off",) and sys.platform == "darwin":
                 self.log("sandbox-exec not found: Pharo runs without network isolation")
@@ -167,7 +180,7 @@ class Runner:
             prof.write_text(SANDBOX_PROFILE)
             r = subprocess.run(["sandbox-exec", "-f", str(prof), "/usr/bin/true"], capture_output=True, timeout=20)
             if r.returncode == 0:
-                self.profile = prof
+                self.prefix = ["sandbox-exec", "-f", str(prof)]
                 return "sandbox-exec (no network)"
         except (OSError, subprocess.SubprocessError):
             pass
@@ -199,7 +212,7 @@ class Runner:
         (workdir / "job.json").write_text(json.dumps({**job_, "out": str(out)}, ensure_ascii=False), encoding="utf-8")
         cmd = [str(self.vm), image.name, "st", str(HARNESS)]
         if self.sandbox != "off":
-            cmd = ["sandbox-exec", "-f", str(self.profile)] + cmd
+            cmd = self.prefix + cmd
         env = {**os.environ, "PB_JOB": str(workdir / "job.json")}
         t0 = time.time()
         proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,

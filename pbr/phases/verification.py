@@ -103,8 +103,8 @@ def completion_prefix(source: str, share: float = 0.4) -> str:
 def write_oracle_tests(ph, verified, oracles) -> dict:
     """{task_id: (tests, untestable, rejected)}: each oracle model, alone, writes tests from the solver's view and
     the contract."""
-    out = {}
-    for c, _ in ph.progress(verified, "independent test suites", every_s=60):
+
+    def one(c):
         pub = public_view(c["task"], c, "code_generation", {})
         user = O.oracle_user(pub, c.get("contract"))
         answers, untestable = [], []
@@ -117,8 +117,9 @@ def write_oracle_tests(ph, verified, oracles) -> dict:
             else:
                 ph.log.info(f"{c['task_id']}: oracle {o.name} gave no valid answer ({'; '.join(ans.errors)[:160]})")
         tests, rejected = O.oracle_tests(answers, c.get("contract"))
-        out[c["task_id"]] = (tests, untestable, rejected)
-    return out
+        return c["task_id"], (tests, untestable, rejected)
+    # tasks are independent: compute.llm_parallel at once
+    return dict(ph.pmap(one, [c for c, _ in verified], "independent test suites"))
 
 
 def check_task(ph, runner, c, r, tests, cap, repeat):

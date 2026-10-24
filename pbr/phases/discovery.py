@@ -15,7 +15,11 @@ passed the method filters of phase 3), one from the sampled tasks of the existin
    item). Behaviours are named in language-neutral terms so Python tasks and Pharo methods can be compared; the
    evaluation task type is NOT a behaviour (§2).
 2. **Consolidation.** The model organises its own proposals of that source into a hierarchy with a definition per
-   concept, inclusion and exclusion rules, and the items each behaviour covers.
+   concept, inclusion and exclusion rules, and the items each behaviour covers. Every call stays small whatever the
+   number of proposals: similar proposals are grouped (embeddings); the model designs the categories and
+   subcategories from its most frequent groups, places every group in one subcategory, then writes the behaviours of
+   each subcategory in its own call (caps: ``discovery.consolidation``). Nothing is dropped: groups placed nowhere are
+   kept as unassigned proposals.
 
 Outputs, per model and source, ``<model>/<pharo|literature>/``:
   taxonomy.png       the taxonomy as a tree; a small bar and a number give the items classified under each behaviour
@@ -30,14 +34,13 @@ compared, saturation_pharo.png and saturation_literature.png (the three annotato
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-import json
+from collections import defaultdict
 import re
 
 import pandas as pd
 
 from .. import figures as F
-from ..common import read_json, read_jsonl, write_csv, write_json, write_jsonl
+from ..common import parallel, pmap, read_json, read_jsonl, write_csv, write_json, write_jsonl
 from ..items import load_items
 from ..llm import Client, annotators, ledger_summary
 
@@ -57,16 +60,55 @@ Rules:
 - evidence: a short quote (at most 15 words) copied from the item that shows the behaviour.
 - insufficient_context: true only when the item does not show enough code or description to decide."""
 
-CONSOLIDATE = """You proposed the programming behaviours listed below (id, category › subcategory › behavior, number of items).
-Organise them into ONE clean hierarchical taxonomy:
-- at most 16 categories, each with 1 to 8 subcategories, each with 1 to 10 behaviours;
-- merge proposals that mean the same thing, even if worded differently; keep different behaviours apart;
-- every concept gets a one-sentence definition; every behaviour gets "include" rules (when to use it) and "exclude" rules (when not to, naming the neighbouring behaviour to use instead);
-- "proposals": the ids of the proposals that each behaviour covers; assign every proposal id to exactly one behaviour;
+SKELETON = """You proposed the programming behaviours listed below (id, category › subcategory › behavior, number of items).
+Each line is a group of proposals that mean nearly the same thing; the less frequent groups are not listed.
+Design the TOP of ONE clean hierarchical taxonomy: its categories and their subcategories only (the behaviours come later).
+- at most MAXC categories, each with 1 to MAXS subcategories;
+- together they cover every proposal listed; merge what means the same thing, keep different things apart;
+- every category and subcategory gets a definition of ONE short sentence;
 - names stay language-neutral (no Python, Smalltalk or library names).
 
 Proposals:
 """
+
+ROUTE = """Here are the categories and subcategories of your taxonomy (id: category › subcategory — definition):
+
+SUBCATEGORIES
+
+Place each proposal below (id: category › subcategory › behavior) in the ONE subcategory that covers it, by id;
+answer "none" only when no subcategory fits.
+
+Proposals:
+"""
+
+BEHAVIOURS = """Subcategory "SUBNAME" of the category "CATNAME": SUBDEF
+The other subcategories of this category: SIBLINGS
+
+You placed these proposals in this subcategory (id: behavior, number of items):
+
+PROPOSALS
+
+Write the BEHAVIOURS of this subcategory (1 to MAXB):
+- a behaviour is a concrete thing code does: an imperative phrase of 3 to 8 words, language-neutral;
+- merge proposals that mean the same thing, even if worded differently; keep different behaviours apart;
+- definition: one sentence; include: 1 to 3 rules (when to use it); exclude: 1 to 3 rules (when not to, naming the
+  neighbouring behaviour to use instead);
+- proposals: the ids of the proposals the behaviour covers; every proposal id in exactly one behaviour."""
+
+ASSIGN = """Here are the behaviours of one subcategory of your taxonomy (id: behavior — definition):
+
+BEHAVIOURS
+
+Place each proposal below (id: behavior) under the ONE behaviour that covers it, by id; answer "none" only when no
+behaviour fits.
+
+Proposals:
+"""
+
+CONSOLIDATE_VERSION = "discovery-consolidate-v3"    # the proposals keep PROMPT_VERSION: their cached answers stay valid
+ASSIGN_BATCH = 80            # proposal groups per placement call
+SUB_BATCH = 120              # proposal groups shown when a subcategory's behaviours are written (the rest: placed after)
+TAXONOMIST = "You are an expert software engineer and a careful taxonomist. Answer with JSON only."
 
 
 def item_schema(local_ids: list[str], maxb: int) -> dict:
@@ -81,19 +123,29 @@ def item_schema(local_ids: list[str], maxb: int) -> dict:
         "minItems": len(local_ids), "maxItems": len(local_ids)}}, "required": ["items"]}
 
 
-TAX_SCHEMA = {"type": "object", "properties": {"categories": {"type": "array", "minItems": 1, "items": {
-    "type": "object", "properties": {
-        "name": {"type": "string"}, "definition": {"type": "string"},
-        "subcategories": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
-            "name": {"type": "string"}, "definition": {"type": "string"},
-            "behaviors": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
-                "name": {"type": "string"}, "definition": {"type": "string"},
-                "include": {"type": "array", "items": {"type": "string"}},
-                "exclude": {"type": "array", "items": {"type": "string"}},
-                "proposals": {"type": "array", "items": {"type": "string"}}},
-                "required": ["name", "definition", "include", "exclude", "proposals"]}}},
-            "required": ["name", "definition", "behaviors"]}}},
-    "required": ["name", "definition", "subcategories"]}}}, "required": ["categories"]}
+def skeleton_schema(maxc: int, maxs: int) -> dict:
+    named = {"name": {"type": "string", "minLength": 2}, "definition": {"type": "string", "minLength": 10}}
+    return {"type": "object", "properties": {"categories": {"type": "array", "minItems": 1, "maxItems": maxc, "items": {
+        "type": "object", "properties": {**named, "subcategories": {"type": "array", "minItems": 1, "maxItems": maxs, "items": {
+            "type": "object", "properties": named, "required": ["name", "definition"]}}},
+        "required": ["name", "definition", "subcategories"]}}}, "required": ["categories"]}
+
+
+def behaviours_schema(group_ids: list[str], maxb: int) -> dict:
+    rule = {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string"}}
+    return {"type": "object", "properties": {"behaviors": {"type": "array", "minItems": 1, "maxItems": maxb, "items": {
+        "type": "object", "properties": {
+            "name": {"type": "string", "minLength": 3}, "definition": {"type": "string", "minLength": 10},
+            "include": rule, "exclude": rule,
+            "proposals": {"type": "array", "items": {"type": "string", "enum": group_ids}}},
+        "required": ["name", "definition", "include", "exclude", "proposals"]}}}, "required": ["behaviors"]}
+
+
+def assign_schema(group_ids: list[str], target_ids: list[str]) -> dict:
+    return {"type": "object", "properties": {"assignments": {"type": "array", "items": {"type": "object", "properties": {
+        "id": {"type": "string", "enum": group_ids}, "target": {"type": "string", "enum": target_ids + ["none"]}},
+        "required": ["id", "target"]}, "minItems": len(group_ids), "maxItems": len(group_ids)}},
+        "required": ["assignments"]}
 
 
 def norm(s: str) -> str:
@@ -110,12 +162,16 @@ def batches(items: pd.DataFrame, size: int) -> list[pd.DataFrame]:
 
 def propose(ph, client, batch_list, maxb, label: str = "") -> tuple[list[dict], list[dict]]:
     rows, raws = [], []
-    for b in ph.progress(batch_list, f"{client.name}{label}: proposal batches", every_s=120):
+
+    def ask(b):
         local = [f"I{i + 1}" for i in range(len(b))]
         user = "Items:\n\n" + "\n\n".join(f"### {lid}\n{t}" for lid, t in zip(local, b["text"]))
-        ans = client.ask(system=SYSTEM.replace("MAXB", str(maxb)), user=user, schema=item_schema(local, maxb),
-                         max_tokens=300 * len(b) + 200, prompt_version=PROMPT_VERSION, phase=ph.key,
-                         item_id=",".join(b["item_id"]))
+        return client.ask(system=SYSTEM.replace("MAXB", str(maxb)), user=user, schema=item_schema(local, maxb),
+                          max_tokens=300 * len(b) + 200, prompt_version=PROMPT_VERSION, phase=ph.key,
+                          item_id=",".join(b["item_id"]))
+    # the batches of a round are independent: asked in parallel (compute.llm_parallel), kept in their order
+    for b, ans in zip(batch_list, ph.pmap(ask, batch_list, f"{client.name}{label}: proposal batches", every_s=120)):
+        local = [f"I{i + 1}" for i in range(len(b))]
         raws.append({"items": list(b["item_id"]), "request_hash": ans.request_hash, "valid": ans.valid,
                      "errors": ans.errors, "attempts": ans.attempts, "raw": ans.text})
         got = {x.get("id"): x for x in (ans.data or {}).get("items", []) if isinstance(x, dict)} if ans.data else {}
@@ -205,8 +261,55 @@ def saturation_loop(ph, client, src: str, pool, extras, plan: dict, maxb: int, e
     return rows, raws, curve
 
 
-def consolidate(ph, client, rows, source: str, out_dir) -> dict:
-    """The model organises its own proposals of one source into a hierarchy; proposals keep their items."""
+def group_proposals(plist: list[dict], embedder, threshold: float) -> list[list[dict]]:
+    """Proposals of one model grouped by embedding similarity (as in the saturation loop): a proposal joins the most
+    similar group (cosine >= threshold) or starts one. Proposals come most frequent first: a group's first is its label."""
+    import numpy as np
+    texts = [f"clustering: {' › '.join(p['label'])}" for p in plist]
+    vecs, groups = [], []
+    for p, v in zip(plist, embedder.embed(texts)):
+        v = np.asarray(v)
+        if vecs:
+            sims = np.asarray(vecs) @ v
+            j = int(np.argmax(sims))
+            if sims[j] >= threshold:
+                groups[j].append(p)
+                continue
+        vecs.append(v)
+        groups.append([p])
+    return groups
+
+
+def place(ph, client, groups: list[str], label: dict, targets: dict, prompt: str, item_id: str) -> tuple[dict, int]:
+    """{group id: target id} for the groups the model places under one of ``targets`` ({id: line}), in batches;
+    the number of invalid calls."""
+    chunks = [groups[k:k + ASSIGN_BATCH] for k in range(0, len(groups), ASSIGN_BATCH)]
+
+    def ask(chunk):
+        return client.ask(system=TAXONOMIST, user=prompt.replace("TARGETS", "\n".join(targets.values()))
+                          + "\n".join(f"{g}: {label[g]}" for g in chunk),
+                          schema=assign_schema(chunk, list(targets)), max_tokens=24 * len(chunk) + 200,
+                          prompt_version=CONSOLIDATE_VERSION, phase=ph.key, item_id=f"{item_id}:{chunk[0]}-{chunk[-1]}")
+    out, bad = {}, 0
+    for chunk, a in zip(chunks, ph.pmap(ask, chunks, f"{item_id}: placing proposal groups")):
+        bad += not a.valid
+        for x in (a.data or {}).get("assignments", []) if a.valid else []:
+            if x.get("id") in chunk and x["id"] not in out and x.get("target") in targets:
+                out[x["id"]] = x["target"]
+    return out, bad
+
+
+def consolidate(ph, client, rows, source: str, out_dir, embedder) -> dict:
+    """The model organises its own proposals of one source into a hierarchy; proposals keep their items.
+    Every call and answer stays small, whatever the number of proposals:
+      1. proposals that mean nearly the same thing are grouped (embedding cosine >= novelty_threshold);
+      2. the model designs the categories and subcategories from its most frequent groups (``overview_chars``);
+      3. it places every group in one subcategory (batches of ``ASSIGN_BATCH``);
+      4. for each subcategory, it writes the behaviours (definition, inclusion and exclusion rules) and says which
+         groups each covers; groups it leaves out are placed under one of them afterwards.
+    Groups placed nowhere are kept as unassigned proposals (phase 6 still uses them), never dropped."""
+    cc = ph.cfg["discovery"]["consolidation"]
+    maxc, maxs, maxb = int(cc["max_categories"]), int(cc["max_subcategories"]), int(cc["max_behaviors"])
     props = defaultdict(lambda: {"items": [], "evidence": []})
     for r in rows:
         for b in r["behaviors"]:
@@ -217,38 +320,106 @@ def consolidate(ph, client, rows, source: str, out_dir) -> dict:
             p["items"].append(r["item_id"])
             p["evidence"].append(b.get("evidence", ""))
     plist = sorted(props.values(), key=lambda p: (-len(p["items"]), p["label"]))
-    for i, p in enumerate(plist):
-        p["id"] = f"p{i + 1}"
-    lines = [f"{p['id']}: {p['label'][0]} › {p['label'][1]} › {p['label'][2]} ({len(p['items'])})" for p in plist]
-    pid = {p["id"]: p for p in plist}
-    ans = client.ask(system="You are an expert software engineer and a careful taxonomist. Answer with JSON only.",
-                     user=CONSOLIDATE + "\n".join(lines), schema=TAX_SCHEMA, max_tokens=12000,
-                     prompt_version=PROMPT_VERSION, phase=ph.key, item_id=f"consolidation:{source}")
-    tax = ans.data if ans.valid else None
-    assigned = Counter()
+    groups = group_proposals(plist, embedder, float(ph.cfg["discovery"]["novelty_threshold"]))
+    gitems = [list(dict.fromkeys(i for p in g for i in p["items"])) for g in groups]
+    order = sorted(range(len(groups)), key=lambda j: (-len(gitems[j]), groups[j][0]["label"]))
+    gid = {j: f"g{n + 1}" for n, j in enumerate(order)}
+    G = {gid[j]: {"members": groups[j], "items": gitems[j], "label": groups[j][0]["label"]} for j in order}
+    gids = [gid[j] for j in order]
+    line = {g: f"{g}: {' › '.join(G[g]['label'])} ({len(G[g]['items'])})" for g in gids}
+    shown, size = [], 0
+    for g in gids:
+        if size + len(line[g]) > int(cc["overview_chars"]):
+            break
+        shown.append(line[g])
+        size += len(line[g]) + 1
+    ph.log.info(f"{client.name}/{source}: {len(plist)} distinct proposals in {len(groups)} groups; the categories and "
+                f"subcategories are designed from the {len(shown)} most frequent")
+    ans = client.ask(system=TAXONOMIST, user=SKELETON.replace("MAXC", str(maxc)).replace("MAXS", str(maxs)) + "\n".join(shown),
+                     schema=skeleton_schema(maxc, maxs), max_tokens=60 * maxc * (maxs + 1) + 300,
+                     prompt_version=CONSOLIDATE_VERSION, phase=ph.key, item_id=f"consolidation:{source}")
     candidate = {"model": client.name, "source": source, "n_items_shown": len(rows), "model_info": client.info(),
-                 "prompt_version": PROMPT_VERSION,
-                 "valid": ans.valid, "errors": ans.errors, "request_hash": ans.request_hash, "categories": [],
-                 "n_proposals": len(plist)}
-    if tax:
-        for c in tax["categories"]:
-            cc = {"name": c["name"].strip(), "definition": c["definition"].strip(), "subcategories": []}
-            for s in c["subcategories"]:
-                ss = {"name": s["name"].strip(), "definition": s["definition"].strip(), "behaviors": []}
-                for b in s["behaviors"]:
-                    covered = [x for x in b.get("proposals", []) if x in pid]
-                    assigned.update(covered)
-                    items = list(dict.fromkeys(i for x in covered for i in pid[x]["items"]))
-                    ev = [e for x in covered for e in pid[x]["evidence"] if e][:3]
+                 "prompt_version": CONSOLIDATE_VERSION, "valid": ans.valid, "errors": ans.errors,
+                 "request_hash": ans.request_hash, "categories": [], "n_proposals": len(plist),
+                 "n_proposal_groups": len(groups), "groups_in_overview": len(shown)}
+    placed, problems = {}, []
+    if ans.valid:
+        subs = {}                                    # subcategory id -> (category, subcategory) of the skeleton
+        for c in ans.data["categories"]:
+            for s_ in c["subcategories"]:
+                subs[f"s{len(subs) + 1}"] = (c, s_)
+        lbl = {g: " › ".join(G[g]["label"]) for g in gids}
+        route, bad = place(ph, client, gids, lbl, {i: f"{i}: {c['name'].strip()} › {s_['name'].strip()} — {s_['definition'].strip()}"
+                                                   for i, (c, s_) in subs.items()},
+                           ROUTE.replace("SUBCATEGORIES", "TARGETS"), f"consolidation:{source}:route")
+        if bad:
+            problems.append(f"{bad} routing call(s) invalid")
+        members = defaultdict(list)
+        for g in gids:                               # most frequent first
+            if g in route:
+                members[route[g]].append(g)
+
+        def write_behaviours(sid):
+            c, s_ = subs[sid]
+            mine = members[sid]
+            head = mine[:SUB_BATCH]                  # the rest is placed afterwards
+            sib = [x["name"].strip() for x in c["subcategories"] if x is not s_]
+            r = client.ask(system=TAXONOMIST, user=BEHAVIOURS.replace("SUBNAME", s_["name"].strip())
+                           .replace("CATNAME", c["name"].strip()).replace("SUBDEF", s_["definition"].strip())
+                           .replace("SIBLINGS", "; ".join(sib) or "none").replace("MAXB", str(maxb))
+                           .replace("PROPOSALS", "\n".join(f"{g}: {G[g]['label'][2]} ({len(G[g]['items'])})" for g in head)),
+                           schema=behaviours_schema(head, maxb), max_tokens=maxb * 220 + 12 * len(head) + 300,
+                           prompt_version=CONSOLIDATE_VERSION, phase=ph.key, item_id=f"consolidation:{source}:{sid}")
+            if not r.valid:
+                return sid, [], {}, 1
+            behs, got = [], {}
+            for k, b in enumerate(r.data["behaviors"]):
+                bid = f"{sid}b{k + 1}"
+                behs.append((bid, b))
+                for g in b["proposals"]:
+                    got.setdefault(g, bid)
+            left = [g for g in mine if g not in got]          # left out of the answer, or not shown (rest)
+            bad = 0
+            if left:
+                more, bad = place(ph, client, left, {g: G[g]["label"][2] for g in left},
+                                  {bid: f"{bid}: {b['name'].strip()} — {b['definition'].strip()}" for bid, b in behs},
+                                  ASSIGN.replace("BEHAVIOURS", "TARGETS"), f"consolidation:{source}:{sid}:place")
+                got.update(more)
+            return sid, behs, got, bad
+
+        built = {}
+        for sid, behs, got, bad in ph.pmap(write_behaviours, [x for x in subs if members[x]],
+                                           f"{client.name}/{source}: behaviours per subcategory"):
+            if bad:
+                problems.append(f"subcategory {sid}: {bad} invalid call(s)")
+            built[sid] = (behs, got)
+        for c in ans.data["categories"]:
+            cc_ = {"name": c["name"].strip(), "definition": c["definition"].strip(), "subcategories": []}
+            for s_ in c["subcategories"]:
+                sid = next(i for i, (_, x) in subs.items() if x is s_)
+                behs, got = built.get(sid, ([], {}))
+                ss = {"name": s_["name"].strip(), "definition": s_["definition"].strip(), "behaviors": []}
+                for bid, b in behs:
+                    mem = [g for g in members[sid] if got.get(g) == bid]
+                    if not mem:
+                        continue                    # a behaviour no proposal supports is not kept
+                    placed.update({g: bid for g in mem})
+                    ps = [p for g in mem for p in G[g]["members"]]
+                    items = list(dict.fromkeys(i for p in ps for i in p["items"]))
                     ss["behaviors"].append({"name": b["name"].strip(), "definition": b["definition"].strip(),
-                                            "include": b.get("include", []), "exclude": b.get("exclude", []),
-                                            "proposals": [pid[x]["label"] for x in covered], "examples": items[:8],
-                                            "items": items, "n_items": len(items), "evidence": ev})
-                cc["subcategories"].append(ss)
-            candidate["categories"].append(cc)
-    # proposals the consolidation forgot are kept, never dropped
-    candidate["unassigned_proposals"] = [{"label": p["label"], "items": p["items"]} for p in plist if p["id"] not in assigned]
-    candidate["assigned_share"] = round(len(assigned) / max(len(plist), 1), 3)
+                                            "include": b["include"], "exclude": b["exclude"],
+                                            "proposals": [p["label"] for p in ps], "examples": items[:8], "items": items,
+                                            "n_items": len(items), "evidence": [e for p in ps for e in p["evidence"] if e][:3]})
+                if ss["behaviors"]:
+                    cc_["subcategories"].append(ss)
+            if cc_["subcategories"]:
+                candidate["categories"].append(cc_)
+    for pr in problems:
+        ph.warn(f"{client.name}/{source} consolidation: {pr} — those proposals stay unassigned")
+    # proposals the consolidation did not place are kept, never dropped
+    rest = [p for g in gids if g not in placed for p in G[g]["members"]]
+    candidate["unassigned_proposals"] = [{"label": p["label"], "items": p["items"]} for p in rest]
+    candidate["assigned_share"] = round(1 - len(rest) / max(len(plist), 1), 3)
     write_json(out_dir / "taxonomy.json", candidate)
     return candidate
 
@@ -296,43 +467,53 @@ def run(ph):
     plans = read_json(ph.upstream("sampling", "sampling_design.json"))["discovery"]["plans"]
     embedder = Client({"name": "embedder", **ph.cfg["llm"]["embedder"]}, ph.cfg)
     summary, all_rows, cands, curves = [], [], {}, []
-    for client in annotators(ph.cfg):
+    clients = annotators(ph.cfg)
+    for client in clients:
         info = client.info()
         ph.log.info(f"annotator {client.name}: {info.get('model')} ({info.get('family') or ''} "
                     f"{info.get('parameter_size') or ''} {info.get('quantization') or ''}, digest {info.get('digest', '')})")
-        for src, its in by_source.items():
-            if its.empty:
-                continue
-            out = ph.path(client.name, src, "x").parent
-            pool = its[its["order"].notna()].sort_values("order")
-            extras = its[its["order"].isna()]            # targeted and test methods: in the first round
-            rows, raws, curve = saturation_loop(ph, client, src, pool, extras, plans[src], maxb, embedder)
-            write_jsonl(out / "proposals.jsonl", rows)
-            write_jsonl(out / "raw_responses.jsonl", raws)
-            write_csv(out / "saturation.csv", pd.DataFrame(curve))
-            curves += [{**c, "model": client.name, "source": src} for c in curve]
-            saturation_figure(curve, f"{client.name}: saturation on the {SOURCES[src]}", out / "saturation.png", plans[src])
-            bad = sum(not r["valid"] for r in rows)
-            if bad:
-                ph.warn(f"{client.name}/{src}: {bad} items without a valid proposal (kept in proposals.jsonl, valid=false)")
-            ph.log.info(f"{client.name}/{src}: consolidating {sum(len(r['behaviors']) for r in rows)} proposals into a hierarchy")
-            cand = consolidate(ph, client, rows, src, out)
-            if not cand["valid"]:
-                ph.warn(f"{client.name}/{src}: consolidation invalid after retries ({cand['errors'][:2]}) — candidate kept empty")
-            export_tables(out, cand, titles)
-            nc, ns, nb = counts(cand)
-            ph.log.info(f"{client.name}/{src}: {nc} categories, {ns} subcategories, {nb} behaviours; "
-                        f"{cand['assigned_share']:.0%} of proposals placed")
-            summary.append({"model": client.name, "source": src, "model_id": info.get("model"), "digest": info.get("digest"),
-                            "items": len(rows), "invalid_items": bad, "saturation": curve[-1]["status"] if curve else None,
-                            "rounds": curve[-1]["round"] if curve else 0,
-                            "insufficient_context": sum(r["insufficient_context"] for r in rows),
-                            "proposals": sum(len(r["behaviors"]) for r in rows), "distinct_proposals": cand["n_proposals"],
-                            "categories": nc, "subcategories": ns, "behaviors": nb,
-                            "assigned_share": cand["assigned_share"], "consolidation_valid": cand["valid"]})
-            all_rows += rows
-            cands[(client.name, src)] = cand
-            model_figures(ph, client.name, src, cand, out)
+
+    def one(task):
+        """One annotator on one source, alone: saturation loop, then consolidation (no figure: not thread-safe)."""
+        client, src = task
+        its = by_source[src]
+        out = ph.path(client.name, src, "x").parent
+        pool = its[its["order"].notna()].sort_values("order")
+        extras = its[its["order"].isna()]            # targeted and test methods: in the first round
+        rows, raws, curve = saturation_loop(ph, client, src, pool, extras, plans[src], maxb, embedder)
+        write_jsonl(out / "proposals.jsonl", rows)
+        write_jsonl(out / "raw_responses.jsonl", raws)
+        write_csv(out / "saturation.csv", pd.DataFrame(curve))
+        ph.log.info(f"{client.name}/{src}: consolidating {sum(len(r['behaviors']) for r in rows)} proposals into a hierarchy")
+        cand = consolidate(ph, client, rows, src, out, embedder)
+        export_tables(out, cand, titles)
+        return client, src, out, rows, curve, cand
+
+    # (annotator, source) tasks are independent: compute.models_parallel at once (sources interleaved, so the
+    # tasks running together use different models)
+    tasks = [(c, src) for src, its in by_source.items() if not its.empty for c in clients]
+    for client, src, out, rows, curve, cand in pmap(one, tasks, parallel(ph.cfg, "models_parallel")):
+        info = client.info()
+        curves += [{**c, "model": client.name, "source": src} for c in curve]
+        saturation_figure(curve, f"{client.name}: saturation on the {SOURCES[src]}", out / "saturation.png", plans[src])
+        bad = sum(not r["valid"] for r in rows)
+        if bad:
+            ph.warn(f"{client.name}/{src}: {bad} items without a valid proposal (kept in proposals.jsonl, valid=false)")
+        if not cand["valid"]:
+            ph.warn(f"{client.name}/{src}: consolidation invalid after retries ({cand['errors'][:2]}) — candidate kept empty")
+        nc, ns, nb = counts(cand)
+        ph.log.info(f"{client.name}/{src}: {nc} categories, {ns} subcategories, {nb} behaviours; "
+                    f"{cand['assigned_share']:.0%} of proposals placed")
+        summary.append({"model": client.name, "source": src, "model_id": info.get("model"), "digest": info.get("digest"),
+                        "items": len(rows), "invalid_items": bad, "saturation": curve[-1]["status"] if curve else None,
+                        "rounds": curve[-1]["round"] if curve else 0,
+                        "insufficient_context": sum(r["insufficient_context"] for r in rows),
+                        "proposals": sum(len(r["behaviors"]) for r in rows), "distinct_proposals": cand["n_proposals"],
+                        "categories": nc, "subcategories": ns, "behaviors": nb,
+                        "assigned_share": cand["assigned_share"], "consolidation_valid": cand["valid"]})
+        all_rows += rows
+        cands[(client.name, src)] = cand
+        model_figures(ph, client.name, src, cand, out)
     sdf = pd.DataFrame(summary)
     write_csv(ph.path("discovery_summary.csv"), sdf)
     cdf = pd.DataFrame(curves)

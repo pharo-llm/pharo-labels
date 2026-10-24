@@ -21,6 +21,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 import uuid
 
@@ -84,6 +85,33 @@ def load_config(path: Path | None = None, profile: str | None = None) -> dict:
     return cfg
 
 
+def parallel(cfg: dict, key: str) -> int:
+    """compute.<key> (llm_parallel | models_parallel), overridden by the environment variable of the same name in
+    capitals (LLM_PARALLEL=16 ./run.sh). Never part of a fingerprint: it changes the speed, not the results."""
+    return max(1, int(os.getenv(key.upper()) or (cfg.get("compute") or {}).get(key, 1)))
+
+
+def pmap(fn, items, workers: int, progress=None) -> list:
+    """fn over items, ``workers`` at a time, results in the order of the items. ``progress(iterable, total)``
+    wraps the completions (for the log). The first error cancels what has not started and is raised."""
+    items = list(items)
+    if workers <= 1 or len(items) <= 1:
+        return [fn(x) for x in (progress(items, len(items)) if progress else items)]
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    out = [None] * len(items)
+    ex = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futs = {ex.submit(fn, x): i for i, x in enumerate(items)}
+        done = as_completed(futs)
+        for f in (progress(done, len(items)) if progress else done):
+            out[futs[f]] = f.result()
+    except BaseException:
+        ex.shutdown(wait=True, cancel_futures=True)
+        raise
+    ex.shutdown(wait=True)
+    return out
+
+
 def resolve(rel: str | Path) -> Path:
     p = Path(rel)
     return p if p.is_absolute() else (ROOT / p).resolve()
@@ -125,7 +153,7 @@ def now_iso() -> str:
 def _atomic(path: Path, write):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     write(tmp)
     tmp.replace(path)
     return path
@@ -155,11 +183,15 @@ def write_jsonl(path: Path, rows) -> Path:
     return _atomic(path, w)
 
 
+_APPEND_LOCK = threading.Lock()
+
+
 def append_jsonl(path: Path, row: dict):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    line = json.dumps(row, ensure_ascii=False, default=str) + "\n"
+    with _APPEND_LOCK, path.open("a", encoding="utf-8") as f:
+        f.write(line)
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -299,6 +331,11 @@ class Phase:
     def metric(self, key: str, value):
         self.metrics[key] = value
         return value
+
+    def pmap(self, fn, items, label: str, workers: int | None = None, every_s: float = 60.0) -> list:
+        """fn over items with ``compute.llm_parallel`` requests in flight (or ``workers``); results in order."""
+        return pmap(fn, items, workers or parallel(self.cfg, "llm_parallel"),
+                    lambda it, n: self.progress(it, label, total=n, every_s=every_s))
 
     def progress(self, items, label: str, total: int | None = None, every_s: float = 30.0):
         """Iterate and log progress lines (count, %, rate, ETA) at most every ``every_s`` seconds and at

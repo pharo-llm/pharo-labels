@@ -41,7 +41,7 @@ from .. import figures as F
 from .. import oracle as O
 from .. import pharo as P
 from .. import taxonomy as T
-from ..common import read_jsonl, write_csv, write_json, write_jsonl, write_text
+from ..common import parallel, read_jsonl, write_csv, write_json, write_jsonl, write_text
 from ..llm import Client, ledger_summary
 from .profile import latest_taxonomy
 
@@ -163,12 +163,15 @@ def write_contracts(ph, sel, tax) -> dict:
         ph.warn("the contract model is the task author: the contracts are not independent of the tasks")
     writer = Client(spec, ph.cfg)
     out = {}
-    for b in sel.itertuples():
+
+    def ask(b):
         beh = T.index(tax).get(b.behavior_id) or {}
         path = f"{T.label(tax, beh['category_id'])} › {T.label(tax, beh['subcategory_id'])}" if beh else "?"
-        ans = writer.ask(system=O.CONTRACT_PROMPT, user=O.contract_user({**beh, "id": b.behavior_id}, path),
-                         schema=O.CONTRACT_SCHEMA, max_tokens=1500, prompt_version=O.CONTRACT_VERSION, phase=ph.key,
-                         item_id=O.contract_id(b.behavior_id))
+        return writer.ask(system=O.CONTRACT_PROMPT, user=O.contract_user({**beh, "id": b.behavior_id}, path),
+                          schema=O.CONTRACT_SCHEMA, max_tokens=1500, prompt_version=O.CONTRACT_VERSION, phase=ph.key,
+                          item_id=O.contract_id(b.behavior_id))
+    behs = list(sel.itertuples())
+    for b, ans in zip(behs, ph.pmap(ask, behs, "behaviour contracts")):
         if not ans.valid:
             ph.warn(f"{b.behavior_id}: no valid contract ({'; '.join(ans.errors)[:200]}) — its tasks cannot pass the alignment check")
             continue
@@ -244,7 +247,10 @@ def run(ph):
             plan.append((b, s))
     plan = plan[:target_n]
     funnel["seeds"] = len(plan)
-    for b, seed in ph.progress(plan, "candidates authored", every_s=60):
+
+    def author_one(job):
+        """One candidate: written, run in a clean image, repaired with the image's report (independent of the others)."""
+        b, seed = job
         beh = T.index(tax).get(b.behavior_id) or {}
         task_id = "PBR-" + b.behavior_id + "-" + hashlib.sha1(seed["method_id"].encode()).hexdigest()[:6]
         lit_ex = str(cov.loc[b.behavior_id, "literature_examples"]) if b.behavior_id in cov.index else ""
@@ -279,12 +285,7 @@ def run(ph):
         if task is None:
             status = "rejected: author answer invalid"
         else:
-            funnel["authored"] += 1
             last = history[-1]
-            if last.get("installs"):
-                funnel["installs"] += 1
-            if last.get("tests_pass"):
-                funnel["reference_passes"] += 1
             status = "executes" if last.get("tests_pass") else f"rejected: {last.get('stage')}" + ("" if last.get("installs") else " (does not install)")
         rec = {"task_id": task_id, "behavior_ids": [b.behavior_id], "category_id": beh.get("category_id"),
                "subcategory_id": beh.get("subcategory_id"), "behavior": beh.get("name"),
@@ -297,7 +298,6 @@ def run(ph):
                               "seed_selector": f"{seed['class_name']}>>{seed['selector']}",
                               "literature_example": lit_id, "coverage_status": cov.loc[b.behavior_id, "status"] if b.behavior_id in cov.index else None},
                "author": author.info(), "prompt_version": PROMPT_VERSION, "rounds": history, "validation_status": status}
-        cands.append(rec)
         if task:
             d = ph.path("tasks", task_id)
             write_json(d / "task.json", rec)
@@ -306,6 +306,16 @@ def run(ph):
             ref, tests = tonel_like(task)
             write_text(d / "reference.st", ref)
             write_text(d / "tests.st", tests)
+        return rec
+
+    # candidates are independent: as many at once as LLM requests and Pharo images allow
+    for rec in ph.pmap(author_one, plan, "candidates authored",
+                       workers=min(parallel(ph.cfg, "llm_parallel"), max(1, runner.workers))):
+        cands.append(rec)
+        if rec["task"] is not None:
+            funnel["authored"] += 1
+            funnel["installs"] += bool(rec["rounds"][-1].get("installs"))
+            funnel["reference_passes"] += bool(rec["rounds"][-1].get("tests_pass"))
     write_jsonl(ph.path("benchmark_candidates.jsonl"), cands)
     ok = [c for c in cands if c["validation_status"] == "executes"]
     ph.metric("behaviors_selected", len(sel))

@@ -24,7 +24,7 @@ import pandas as pd
 
 from .. import figures as F
 from .. import taxonomy as T
-from ..common import append_jsonl, now_iso, read_jsonl, stable_hash, write_parquet
+from ..common import append_jsonl, now_iso, parallel, pmap, read_jsonl, stable_hash, write_parquet
 from ..items import load_items
 from ..llm import annotators, ledger_summary
 
@@ -97,11 +97,11 @@ def classify(ph, client, tax: dict, items: pd.DataFrame, raw_path, phase_label: 
     digest = taxonomy_digest(tax)
     done = {(r["item_id"], r["model"], r.get("taxonomy_digest")) for r in read_jsonl(raw_path)}
     info = client.info()
-    out = []
     todo = [r for r in items.itertuples() if (r.item_id, client.name, digest) not in done]
     if len(todo) < len(items):
         ph.log.info(f"{client.name}: {len(items) - len(todo)} items already annotated (resumed)")
-    for r in ph.progress(todo, f"{client.name}: items annotated", every_s=60):
+
+    def one(r):
         ans = client.ask(system=system, user=f"ITEM\n{r.text}", schema=sch, max_tokens=700,
                          prompt_version=PROMPT_VERSION, phase=phase_label, item_id=r.item_id, validator=_validator)
         behs = (ans.data or {}).get("behaviors", []) if ans.valid else []
@@ -123,9 +123,10 @@ def classify(ph, client, tax: dict, items: pd.DataFrame, raw_path, phase_label: 
                "input_tokens": ans.usage.get("input_tokens"), "output_tokens": ans.usage.get("output_tokens"),
                "latency_s": ans.usage.get("latency_s"), "cached": ans.cached, "annotated_at": now_iso(),
                "raw_answer": ans.text}
-        append_jsonl(raw_path, rec)
-        out.append(rec)
-    return out
+        append_jsonl(raw_path, rec)       # at once: an interrupted run resumes item by item
+        return rec
+    # items are independent: compute.llm_parallel requests in flight
+    return ph.pmap(one, todo, f"{client.name}: items annotated")
 
 
 def flatten(raw: list[dict]) -> pd.DataFrame:
@@ -175,10 +176,12 @@ def run(ph):
                 f"{len(items)} items ({(items['source'] == 'literature').sum()} literature, "
                 f"{(items['source'] == 'pharo').sum()} Pharo)")
     raw_path = ph.path("annotations_raw.jsonl")
-    for client in annotators(ph.cfg):
+    clients = annotators(ph.cfg)
+    for client in clients:
         info = client.info()
         ph.log.info(f"annotator {client.name}: {info.get('model')} digest {info.get('digest')}")
-        classify(ph, client, tax, items, raw_path, ph.key)
+    # the annotators never see each other's answers: compute.models_parallel of them at once
+    pmap(lambda c: classify(ph, c, tax, items, raw_path, ph.key), clients, parallel(ph.cfg, "models_parallel"))
     raw = latest_raw(read_jsonl(raw_path), tax)
     item_ids = set(items["item_id"])
     raw = [r for r in raw if r["item_id"] in item_ids]

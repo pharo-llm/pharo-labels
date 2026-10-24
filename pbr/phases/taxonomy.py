@@ -292,17 +292,24 @@ def build(ph, src: str):
     groups = list(df.groupby("group", sort=True))
     n_multi = sum(len(g) > 1 for _, g in groups)
     ph.log.info(f"{len(groups)} candidate groups ({n_multi} with several members) → the editor judges each one")
-    for gname, g in ph.progress(groups, "candidate groups judged", every_s=60):
-        lv = g["level"].iloc[0]
+
+    def judge(group):
+        gname, g = group
         rows_ = sorted(g.itertuples(), key=lambda r: -r.size)     # members that classify the most items first
+        if len(rows_) < 2:
+            return None
+        members = "\n".join(f"{i}. [{r.model}, {r.size} item{'s' if r.size != 1 else ''}] {r.name}: {r.definition}"
+                             + (f" | use when: {'; '.join(r.include)}" if len(r.include) else "")
+                             for i, r in enumerate(rows_, 1))
+        return editor.ask(system=EDIT_SYSTEM, user=f"Level: {g['level'].iloc[0]}\nMembers:\n{members}", schema=EDIT_SCHEMA,
+                          max_tokens=400 + 260 * len(rows_), prompt_version=PROMPT_VERSION, phase=ph.key,
+                          item_id=gname, validator=partition_validator(len(rows_)))
+    # the groups are independent: judged in parallel (compute.llm_parallel), then applied in order
+    for (gname, g), ans in zip(groups, ph.pmap(judge, groups, "candidate groups judged")):
+        lv = g["level"].iloc[0]
+        rows_ = sorted(g.itertuples(), key=lambda r: -r.size)
         parts = None
-        if len(rows_) > 1:
-            members = "\n".join(f"{i}. [{r.model}, {r.size} item{'s' if r.size != 1 else ''}] {r.name}: {r.definition}"
-                                 + (f" | use when: {'; '.join(r.include)}" if len(r.include) else "")
-                                 for i, r in enumerate(rows_, 1))
-            ans = editor.ask(system=EDIT_SYSTEM, user=f"Level: {lv}\nMembers:\n{members}", schema=EDIT_SCHEMA,
-                             max_tokens=400 + 260 * len(rows_), prompt_version=PROMPT_VERSION, phase=ph.key,
-                             item_id=gname, validator=partition_validator(len(rows_)))
+        if ans is not None:
             if ans.valid:
                 parts = [([rows_[m - 1] for m in c["members"]], c, True) for c in ans.data["concepts"]]
             else:
@@ -529,8 +536,8 @@ def harmonize(ph, editor, draft: dict) -> dict:
         nb = sum(1 for b in T.active(draft, "behavior") if b["category_id"] == c["id"])
         n_it = len({i for b in T.active(draft, "behavior") if b["category_id"] == c["id"] for i in (b.get("items") or [])})
         lines.append(f"{c['id']} {c['name']} ({nb} behaviours, {n_it} items): {c['definition']} | subcategories: "
-                     + "; ".join(s["name"] for s in subs))
-    ans = editor.ask(system=HARM_SYSTEM, schema=CAT_SCHEMA, max_tokens=3000, prompt_version=PROMPT_VERSION,
+                     + "; ".join(s["name"] for s in subs[:12]) + (f"; … ({len(subs) - 12} more)" if len(subs) > 12 else ""))
+    ans = editor.ask(system=HARM_SYSTEM, schema=CAT_SCHEMA, max_tokens=max(3000, 60 * len(cats)), prompt_version=PROMPT_VERSION,
                      phase=ph.key, item_id="harmonize-categories",
                      validator=_merge_validator({"C": {c["id"] for c in cats}}),
                      user=f"There are {len(cats)} categories; merge them into at most {maxc} broad categories of programming "
@@ -565,7 +572,8 @@ def harmonize(ph, editor, draft: dict) -> dict:
             text.append(f"{sc['id']} {sc['name']}: {sc['definition']}")
             text += [f"    {b['id']} {b['name']} ({len(b.get('items') or [])} items): {b['definition']}"
                      for b in behs if b["subcategory_id"] == sc["id"]]
-        ans = editor.ask(system=HARM_SYSTEM, schema=WITHIN_SCHEMA, max_tokens=2500, prompt_version=PROMPT_VERSION,
+        ans = editor.ask(system=HARM_SYSTEM, schema=WITHIN_SCHEMA, max_tokens=max(2500, 30 * (len(behs) + len(subs))),
+                         prompt_version=PROMPT_VERSION,
                          phase=ph.key, item_id=f"harmonize-{c['id']}",
                          validator=_merge_validator({"S": {x["id"] for x in subs}, "B": {b["id"] for b in behs}}),
                          user=f"Category {c['id']} {c['name']}: {c['definition']}\nIts subcategories (S...) and behaviours (B...):\n"

@@ -10,6 +10,15 @@ project:
   data_dir: data                           # downloads and built tools (git-ignored; ./run.sh setup fills it)
   seed: 42
 
+# ------------------------------------------------------------------ compute (speed only: never changes a result)
+compute:
+  # LLM requests in flight per model, and annotators working at the same time (phases 5 and 7). The Ollama server
+  # must allow them: OLLAMA_NUM_PARALLEL >= llm_parallel, OLLAMA_MAX_LOADED_MODELS >= models_parallel (run.sh sets
+  # both when it starts Ollama). Laptop: 1 and 1. One H100 / H200: about 8 and 3. The environment variables
+  # LLM_PARALLEL and MODELS_PARALLEL override these values (LLM_PARALLEL=8 MODELS_PARALLEL=3 ./run.sh).
+  llm_parallel: 1
+  models_parallel: 1
+
 # ------------------------------------------------------------------ sample sizes (per profile)
 profiles:
   pilot:                                   # the first deliverable (§8): small, runs on a laptop in a few hours
@@ -152,8 +161,9 @@ llm:
   editor: {name: qwen, provider: ollama, model: "qwen3.8:27b"}   # writes definitions of merged concepts (phase 6)
   embedder: {provider: ollama, model: "nomic-embed-text"}         # concept similarity (phase 6)
   temperature: 0
-  num_ctx: 16384
-  timeout_seconds: 600
+  num_ctx: 16384                           # context window; doubled (and kept) when a call needs more ...
+  max_num_ctx: 65536                       # ... up to this (a call that still does not fit is an error, never cut)
+  timeout_seconds: 600                     # Ollama: longest silence of a streamed answer; others: the whole answer
   max_retries: 4                           # transport errors and invalid structured output
   requests_per_minute: 0                   # 0 = no limit (local); set for hosted APIs
   # Other providers: provider: openai (any OpenAI-compatible endpoint: base_url, api_key_env) or anthropic
@@ -183,6 +193,11 @@ discovery:
   methods_per_repo: 4                      # the discovery pool is larger: up to 4 methods per repository
   batch_size: 6                            # items per prompt (each model sees the same batches)
   max_behaviors_per_item: 3
+  consolidation:                           # each annotator organises its own proposals (pbr/phases/discovery.py)
+    max_categories: 16
+    max_subcategories: 8                   # per category
+    max_behaviors: 10                      # per subcategory (written one subcategory per call: no answer-length limit)
+    overview_chars: 20000                  # the most frequent proposal groups shown to design the categories (~6k tokens)
 
 # ------------------------------------------------------------------ phase 6: shared taxonomy
 taxonomy:
@@ -256,7 +271,7 @@ pharo:
   workers: 3
   cpu_seconds_limit: 300                   # RLIMIT_CPU of every image process
   file_size_limit_mb: 200                  # RLIMIT_FSIZE
-  sandbox: auto                            # auto = macOS sandbox-exec without network when it works; off
+  sandbox: auto                            # auto = no network for Pharo: macOS sandbox-exec, Linux unshare --net; off
   repeat: 3                                # reference tests run 3 times (once reversed): flaky tests are rejected
   min_mutation_score: 0.6                  # MuTalk: share of mutants the tests kill
   min_tests: 3

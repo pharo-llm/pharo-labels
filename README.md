@@ -32,6 +32,18 @@ PROFILE=smoke ./run.sh      # a few items only, in results-smoke/: checks that e
 python -m pbr diagram       # redraw docs/pipeline.png
 ```
 
+**On a GPU server (one H100 or H200, Linux).** The same command, with parallel LLM requests (`config.yaml` →
+`compute`; they change the speed, never a result):
+
+```bash
+LLM_PARALLEL=8 MODELS_PARALLEL=3 ./run.sh
+```
+
+`run.sh` starts Ollama with `OLLAMA_NUM_PARALLEL` / `OLLAMA_MAX_LOADED_MODELS` set to match (an Ollama already
+running must have been started with them). Do not copy `data/llm-cache/` from another machine: an answer made by
+another build of a model is asked again anyway (the cache checks the model digest). Pharo runs without network
+through `unshare --net` (util-linux); where user namespaces are disabled the log says so.
+
 Requirements: Python ≥ 3.10, git, curl and [Ollama](https://ollama.com). Everything else (models, Pharo image,
 benchmarks, corpus) is obtained by the setup. Expect a large disk and about 20 GB of free memory: the largest
 model, gemma4:31b, takes 19 GB. Profiles: `pilot` (default, small samples), `full`, `smoke`.
@@ -115,13 +127,14 @@ something it reads has changed: its settings, the run of an upstream phase, or a
 
 | Section | What |
 |---|---|
+| `compute` | parallel LLM requests per model and annotators at once (speed only; env `LLM_PARALLEL`, `MODELS_PARALLEL`) |
 | `profiles` | sample sizes: `pilot` (default), `full`, `smoke` (tiny, own results folder) |
 | `repositories` | hard filters, criterion weights and saturation caps, threshold |
 | `literature` | the evaluation task type of each benchmark |
 | `corpus`, `method_filters` | corpus snapshot; long-method limits, whether review methods are sampled |
 | `sampling` | strata, methods per repository, targeted signals |
-| `llm` | annotators, editor, embedding model, decoding, retries, prices |
-| `discovery` | confidence (0.99), margin (±5 %), round size, min_share → patience, novelty threshold, min_support |
+| `llm` | annotators, editor, embedding model, decoding, context window (grown when a call needs it), retries, prices |
+| `discovery` | confidence (0.99), margin (±5 %), round size, min_share → patience, novelty threshold, min_support, consolidation caps |
 | `taxonomy` | candidate thresholds, similarity weights, maximum categories, review required or not |
 | `annotation`, `validation`, `profile`, `coverage` | stage 2: behaviours per item, expert strata, profile models, support |
 | `benchmark` | task author, contract model, oracles, validation thresholds, task types |

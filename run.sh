@@ -12,6 +12,7 @@
 #   ./run.sh cost               LLM calls, tokens, time and cost per phase and model
 #   ./run.sh reset 5            delete what phase 5 produced (expert files kept)
 #   PROFILE=smoke ./run.sh      a few items only, in results-smoke/ (checks every phase in minutes)
+#   LLM_PARALLEL=8 MODELS_PARALLEL=3 ./run.sh    a GPU server (H100 / H200): parallel LLM requests (config: compute)
 #
 #    1 repositories  repos.txt (1,585) -> hard filters + weighted quality score (11 criteria) -> selected_repos.txt
 #    2 literature    12 existing benchmarks -> 6,433 tasks (4,372 distinct problems)
@@ -57,10 +58,16 @@ if needs_setup "${1:-}"; then
   mkdir -p data
   command -v ollama >/dev/null || { echo "Ollama is needed: https://ollama.com/download"; exit 1; }
   host="${OLLAMA_HOST:-localhost:11434}"
+  # parallel LLM requests (config.yaml compute:, or LLM_PARALLEL / MODELS_PARALLEL): the server must allow them
+  read -r lp mp < <(.venv/bin/python -c 'from pbr.common import load_config, parallel as p; c = load_config(); print(p(c, "llm_parallel"), p(c, "models_parallel"))')
   if ! curl -sf "http://${host#http://}/api/tags" >/dev/null; then
-    echo "Starting Ollama (log: data/ollama.log) …"
-    nohup ollama serve > data/ollama.log 2>&1 &
+    echo "Starting Ollama (log: data/ollama.log; $lp parallel request(s) per model, $mp model(s) loaded) …"
+    OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-$lp}" OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-$mp}" \
+      nohup ollama serve > data/ollama.log 2>&1 &
     for _ in $(seq 30); do curl -sf "http://${host#http://}/api/tags" >/dev/null && break; sleep 1; done
+  elif [ "$lp" -gt 1 ] || [ "$mp" -gt 1 ]; then
+    echo "Ollama is already running: it must have been started with OLLAMA_NUM_PARALLEL>=$lp and" \
+         "OLLAMA_MAX_LOADED_MODELS>=$mp, or the parallel requests wait in its queue."
   fi
   # models (Ollama library), Pharo image, benchmarks, corpus
   if [ "${SKIP_SETUP:-0}" != 1 ]; then
