@@ -288,7 +288,7 @@ def place(ph, client, groups: list[str], label: dict, targets: dict, prompt: str
     def ask(chunk):
         return client.ask(system=TAXONOMIST, user=prompt.replace("TARGETS", "\n".join(targets.values()))
                           + "\n".join(f"{g}: {label[g]}" for g in chunk),
-                          schema=assign_schema(chunk, list(targets)), max_tokens=24 * len(chunk) + 200,
+                          schema=assign_schema(chunk, list(targets)), max_tokens=40 * len(chunk) + 300,
                           prompt_version=CONSOLIDATE_VERSION, phase=ph.key, item_id=f"{item_id}:{chunk[0]}-{chunk[-1]}")
     out, bad = {}, 0
     for chunk, a in zip(chunks, ph.pmap(ask, chunks, f"{item_id}: placing proposal groups")):
@@ -368,7 +368,7 @@ def consolidate(ph, client, rows, source: str, out_dir, embedder) -> dict:
                            .replace("CATNAME", c["name"].strip()).replace("SUBDEF", s_["definition"].strip())
                            .replace("SIBLINGS", "; ".join(sib) or "none").replace("MAXB", str(maxb))
                            .replace("PROPOSALS", "\n".join(f"{g}: {G[g]['label'][2]} ({len(G[g]['items'])})" for g in head)),
-                           schema=behaviours_schema(head, maxb), max_tokens=maxb * 220 + 12 * len(head) + 300,
+                           schema=behaviours_schema(head, maxb), max_tokens=maxb * 250 + 16 * len(head) + 400,
                            prompt_version=CONSOLIDATE_VERSION, phase=ph.key, item_id=f"consolidation:{source}:{sid}")
             if not r.valid:
                 return sid, [], {}, 1

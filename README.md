@@ -13,9 +13,9 @@ questions with one reproducible pipeline of 13 phases:
    (both sources are classified with the same behaviours), build executable Pharo benchmark tasks, validate them,
    and evaluate models on them.
 
-**The whole pipeline, phase by phase, with its figures: [docs/PIPELINE.md](docs/PIPELINE.md).**
+**The full methodology, phase by phase, with every setting and the statistics: [METHODOLOGY.md](METHODOLOGY.md).**
 
-![The pipeline, from the repositories to the two final taxonomies](docs/pipeline.png)
+![The pipeline, from the repositories to the two final taxonomies](pipeline.png)
 
 ## Run
 
@@ -29,7 +29,7 @@ questions with one reproducible pipeline of 13 phases:
 ./run.sh cost               # LLM calls, tokens, time and cost per phase and model
 ./run.sh reset 5            # delete what phase 5 produced (expert files in returned/ are kept)
 PROFILE=smoke ./run.sh      # a few items only, in results-smoke/: checks that every phase works in minutes
-python -m pbr diagram       # redraw docs/pipeline.png
+python -m pbr diagram       # redraw pipeline.png
 ```
 
 **On a GPU server (one H100 or H200, Linux).** The same command, with parallel LLM requests (`config.yaml` →
@@ -113,7 +113,7 @@ results/
   04_sampling/                                the samples, representativeness
   05_discovery/<annotator>/<pharo|literature>/  the six taxonomies
   06_taxonomy/<pharo|literature>/             the two final taxonomies
-  07_annotation/ … 13_evaluation/             stage 2 (see docs/PIPELINE.md)
+  07_annotation/ … 13_evaluation/             stage 2 (see METHODOLOGY.md)
 data/                                         downloads, Pharo image, LLM cache (git-ignored)
 ```
 

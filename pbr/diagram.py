@@ -1,4 +1,4 @@
-"""The pipeline figure of the README (docs/pipeline.png): from the repositories to the two final taxonomies.
+"""The pipeline figure of the README (pipeline.png): from the repositories to the two final taxonomies.
 
     python -m pbr diagram         (re-draw it after changing the pipeline or config.yaml)
 
@@ -133,7 +133,7 @@ def draw(path: Path | None = None) -> Path:
     ax.text(0.5, 0.012, "Blue: Pharo methods · orange: existing benchmarks. ≈: measured on the corpus snapshot; "
             "sample sizes and thresholds come from config.yaml (python -m pbr diagram redraws this figure).",
             ha="center", fontsize=9, color=F.INK_2)
-    path = Path(path or ROOT / "docs" / "pipeline.png")
+    path = Path(path or ROOT / "pipeline.png")
     return F.save(fig, path)
 
 
