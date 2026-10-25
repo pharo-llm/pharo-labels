@@ -10,3 +10,5 @@ results/
 # downloads and built tools (./run.sh setup recreates them)
 data/
 results-smoke/
+slurm-*.out
+.claude/settings.local.json
