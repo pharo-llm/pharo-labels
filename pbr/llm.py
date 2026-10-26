@@ -123,7 +123,9 @@ class Client:
         self._info_lock = threading.Lock()
         self._thinks = False
         if self.provider == "ollama":
-            self.base = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+            # one server per model if set (e.g. one per GPU): OLLAMA_HOST_<MODEL>, e.g. OLLAMA_HOST_QWEN3_8_27B
+            self.base = (os.getenv("OLLAMA_HOST_" + re.sub(r"\W", "_", self.model).upper())
+                         or os.getenv("OLLAMA_HOST", "http://localhost:11434"))
             if not self.base.startswith("http"):
                 self.base = "http://" + self.base
         elif self.provider == "openai":
