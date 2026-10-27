@@ -181,6 +181,11 @@ class Client:
                         if not ln:
                             continue
                         d = json.loads(ln)
+                        if "error" in d and "repeat limit" in d["error"]:
+                            # the model loops (deterministic: asking the same again loops again): an invalid
+                            # answer that ask() retries with its errors, not a failed request
+                            d = {**d, "done": True, "done_reason": "repeat"}
+                            break
                         if "error" in d:
                             raise LLMError(f"{self.name}: {d['error']}")
                         parts.append(d.get("message", {}).get("content", ""))
@@ -296,8 +301,9 @@ class Client:
             errors = []
             if schema:
                 if data is None:
-                    errors = ["the answer is not a JSON object" + (" (cut at max_tokens)"
-                                                                  if usage.get("done_reason") == "length" else "")]
+                    errors = ["the answer is not a JSON object" + {"length": " (cut at max_tokens)",
+                                                                   "repeat": " (it repeated itself and was stopped)"}
+                              .get(usage.get("done_reason"), "")]
                 else:
                     v = jsonschema.Draft202012Validator(schema)
                     errors = [f"{'/'.join(map(str, e.path)) or '(root)'}: {e.message}"[:300]
